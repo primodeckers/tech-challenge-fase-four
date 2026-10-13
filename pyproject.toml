@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=77,<83"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "credit-monitor"
+version = "0.1.0"
+description = "Preparacao reproduzivel de dados para o Tech Challenge Fase 4"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "pandas>=2.2,<3.1",
+  "scikit-learn>=1.6,<2",
+  "xlrd>=2.0.2,<3",
+  "pandera[pandas]>=0.25,<1",
+  "evidently>=0.7,<1",
+  "mlflow>=3,<4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

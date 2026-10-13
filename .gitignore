@@ -1,0 +1,23 @@
+/docs/
+
+# Dados, execucoes e credenciais locais
+/data/
+/artifacts/
+/mlruns/
+/mlartifacts/
+/mlflow.db
+/mlflow.db-shm
+/mlflow.db-wal
+/.env
+/.env.*
+!/.env.example
+/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+/build/
+/dist/
