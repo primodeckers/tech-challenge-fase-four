@@ -164,6 +164,30 @@ def test_downstream_failure_propagates_without_becoming_validation_success(batch
     assert caught.value is failure
 
 
+def test_multilevel_columns_are_rejected_with_sanitized_diagnostics(batch):
+    secret = "PRIVATE_COLUMN_GROUP_876543"
+    batch.columns = pd.MultiIndex.from_product([[secret], batch.columns])
+    consumed = []
+    with pytest.raises(InvalidBatch) as caught:
+        execute_validated(batch, lambda valid: consumed.append(valid), mode="training")
+    assert caught.value.as_dict() == {
+        "status": "rejected",
+        "violations": [{"column": None, "rule": "flat_columns_required", "count": 1}],
+    }
+    assert secret not in str(caught.value)
+    assert caught.value.__context__ is None
+    assert consumed == []
+
+
+def test_nested_invalid_values_count_one_dtype_event(batch):
+    batch["AGE"] = [{"private": 1}, {"private": 2}, {"private": 3}]
+    with pytest.raises(InvalidBatch) as caught:
+        validate_batch(batch, mode="training")
+    failures = caught.value.as_dict()["violations"]
+    assert {"column": "AGE", "rule": "integer_dtype", "count": 1} in failures
+    assert "private" not in str(caught.value)
+
+
 @pytest.mark.parametrize("case", ["null", "duplicate_id", "missing", "extra", "string", "fraction", "empty", "duplicate_column"])
 @pytest.mark.parametrize("mode", ["training", "inference"])
 def test_both_schemas_reject_structural_violations(batch, case, mode):

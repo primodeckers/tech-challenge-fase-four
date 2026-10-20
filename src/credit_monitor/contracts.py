@@ -59,6 +59,8 @@ def validate_batch(
         raise ValueError("mode deve ser training ou inference")
     if not isinstance(frame, pd.DataFrame):
         raise InvalidBatch((Violation(None, "dataframe_required", 1),))
+    if isinstance(frame.columns, pd.MultiIndex):
+        raise InvalidBatch((Violation(None, "flat_columns_required", 1),))
     schema = training_schema() if mode == "training" else inference_schema()
     violations = ()
     with config_context(validation_enabled=True, validation_depth=ValidationDepth.SCHEMA_AND_DATA):
@@ -95,7 +97,11 @@ def _summarize_errors(error, schema: pa.DataFrameSchema) -> tuple[Violation, ...
         check = getattr(failure.check, "name", None)
         rule = reason_names.get(reason, check if check in check_names else "schema_violation")
         cases = failure.failure_cases
-        count = len(cases) if isinstance(cases, (pd.DataFrame, pd.Series)) else 1
+        structural = reason in {
+            "COLUMN_NOT_IN_SCHEMA", "COLUMN_NOT_IN_DATAFRAME",
+            "DUPLICATE_COLUMN_LABELS", "WRONG_DATATYPE",
+        }
+        count = len(cases) if not structural and isinstance(cases, (pd.DataFrame, pd.Series)) else 1
         counts[(column, rule)] += max(count, 1)
     return tuple(Violation(column, rule, count) for (column, rule), count in
                  sorted(counts.items(), key=lambda item: (item[0][0] or "", item[0][1])))
