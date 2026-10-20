@@ -2,7 +2,7 @@ import pandas as pd
 import pandera.pandas as pa
 import pytest
 
-from credit_monitor.contracts import InvalidBatch, inference_schema, training_schema, validate_batch
+from credit_monitor.contracts import InvalidBatch, execute_validated, inference_schema, training_schema, validate_batch
 
 
 @pytest.fixture
@@ -104,6 +104,64 @@ def test_global_pandera_disable_cannot_bypass_public_validation(batch):
     with config_context(validation_enabled=False):
         with pytest.raises(InvalidBatch):
             validate_batch(batch, mode="training")
+
+
+@pytest.mark.parametrize("case", ["null", "duplicate", "range", "missing", "type", "empty", "target_present"])
+def test_invalid_batch_never_reaches_downstream_operation(batch, case):
+    frame = batch.drop(columns="default_next_month")
+    if case == "null":
+        frame["AGE"] = frame.AGE.astype("Int64")
+        frame.loc[0, "AGE"] = pd.NA
+    elif case == "duplicate":
+        frame.loc[1, "ID"] = 101
+    elif case == "range":
+        frame.loc[0, "LIMIT_BAL"] = 0
+    elif case == "missing":
+        frame = frame.drop(columns="BILL_AMT1")
+    elif case == "type":
+        frame["LIMIT_BAL"] = frame.LIMIT_BAL.astype(str)
+    elif case == "empty":
+        frame = frame.iloc[:0]
+    else:
+        frame["default_next_month"] = batch.default_next_month
+    consumed = []
+
+    def operation(validated):
+        consumed.append(validated)
+        return "must not run"
+
+    with pytest.raises(InvalidBatch):
+        execute_validated(frame, operation)
+    assert consumed == []
+
+
+@pytest.mark.parametrize("mode", ["training", "inference"])
+def test_validated_operation_receives_full_batch_once_and_returns_result(batch, mode):
+    if mode == "inference":
+        batch = batch.drop(columns="default_next_month")
+    before = batch.copy(deep=True)
+    consumed = []
+
+    def operation(validated):
+        consumed.append(validated.copy(deep=True))
+        validated.loc[0, "AGE"] = 50
+        return {"processed_rows": len(validated)}
+
+    assert execute_validated(batch, operation, mode=mode) == {"processed_rows": 3}
+    assert len(consumed) == 1
+    pd.testing.assert_frame_equal(consumed[0], before)
+    pd.testing.assert_frame_equal(batch, before)
+
+
+def test_downstream_failure_propagates_without_becoming_validation_success(batch):
+    failure = RuntimeError("synthetic downstream failure")
+
+    def operation(validated):
+        raise failure
+
+    with pytest.raises(RuntimeError) as caught:
+        execute_validated(batch, operation, mode="training")
+    assert caught.value is failure
 
 
 @pytest.mark.parametrize("case", ["null", "duplicate_id", "missing", "extra", "string", "fraction", "empty", "duplicate_column"])

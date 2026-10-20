@@ -3,13 +3,29 @@
 from collections import Counter
 from dataclasses import asdict, dataclass
 import json
-from typing import Literal
+from typing import Callable, Literal, TypeVar
 
 import pandas as pd
 import pandera.pandas as pa
 from pandera.config import ValidationDepth, config_context
 
 from credit_monitor.data import TARGET
+
+
+Result = TypeVar("Result")
+
+
+def execute_validated(
+    frame: pd.DataFrame, operation: Callable[[pd.DataFrame], Result], *,
+    mode: Literal["training", "inference"] = "inference",
+) -> Result:
+    """Barreira para consumidores futuros: nenhuma operacao recebe lote invalido.
+
+    O consumidor e responsavel por selecionar features; isto nao treina nem prediz.
+    Falhas do consumidor sao propagadas e nunca convertidas em validacao bem-sucedida.
+    """
+    validated = validate_batch(frame, mode=mode)
+    return operation(validated)
 
 
 @dataclass(frozen=True)
