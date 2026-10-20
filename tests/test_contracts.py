@@ -2,7 +2,7 @@ import pandas as pd
 import pandera.pandas as pa
 import pytest
 
-from credit_monitor.contracts import inference_schema, training_schema
+from credit_monitor.contracts import InvalidBatch, inference_schema, training_schema, validate_batch
 
 
 @pytest.fixture
@@ -46,6 +46,64 @@ def test_training_rejects_invalid_domain_without_mutation(batch, column, value):
     with pytest.raises(pa.errors.SchemaErrors):
         training_schema().validate(batch, lazy=True)
     pd.testing.assert_frame_equal(batch, before)
+
+
+def test_validation_reports_multiple_rules_with_counts(batch):
+    batch.loc[0, "AGE"] = 18
+    batch.loc[1, "ID"] = 101
+    batch.loc[2, "LIMIT_BAL"] = 0
+    with pytest.raises(InvalidBatch) as caught:
+        validate_batch(batch, mode="training")
+    violations = caught.value.as_dict()["violations"]
+    assert { (v["column"], v["rule"]): v["count"] for v in violations } == {
+        ("AGE", "adult_age_range"): 1,
+        ("ID", "unique_id"): 2,
+        ("LIMIT_BAL", "positive_credit_limit"): 1,
+    }
+
+
+def test_validation_hides_values_unknown_column_names_and_pandera_context(batch, capsys):
+    secret = "PRIVATE_CUSTOMER_987654"
+    batch["AGE"] = [secret, secret, secret]
+    batch[secret] = secret
+    with pytest.raises(InvalidBatch) as caught:
+        validate_batch(batch, mode="training")
+    error = caught.value
+    assert error.as_dict()["status"] == "rejected"
+    assert secret not in str(error)
+    assert secret not in repr(error.__dict__)
+    assert error.__context__ is None
+    assert error.__cause__ is None
+    assert capsys.readouterr().out == ""
+
+
+def test_validation_missing_column_identifies_only_known_name(batch):
+    with pytest.raises(InvalidBatch) as caught:
+        validate_batch(batch.drop(columns="AGE"), mode="training")
+    assert {"column": "AGE", "rule": "missing_column", "count": 1} in caught.value.as_dict()["violations"]
+
+
+@pytest.mark.parametrize("mode", ["training", "inference"])
+def test_validation_returns_unchanged_valid_batch(batch, mode):
+    if mode == "inference":
+        batch = batch.drop(columns="default_next_month")
+    pd.testing.assert_frame_equal(validate_batch(batch, mode=mode), batch)
+
+
+def test_validation_rejects_wrong_input_and_unknown_mode(batch):
+    with pytest.raises(InvalidBatch):
+        validate_batch([1, 2, 3])
+    with pytest.raises(ValueError, match="mode"):
+        validate_batch(batch, mode="typo")
+
+
+def test_global_pandera_disable_cannot_bypass_public_validation(batch):
+    from pandera.config import config_context
+
+    batch.loc[0, "AGE"] = 18
+    with config_context(validation_enabled=False):
+        with pytest.raises(InvalidBatch):
+            validate_batch(batch, mode="training")
 
 
 @pytest.mark.parametrize("case", ["null", "duplicate_id", "missing", "extra", "string", "fraction", "empty", "duplicate_column"])
