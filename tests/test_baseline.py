@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from credit_monitor.baseline import FEATURES, calibration_without_seen_profiles, predict_scores, train_models
+from credit_monitor.baseline import FEATURES, calibration_without_seen_profiles, evaluate_binary, predict_scores, select_threshold, train_models
 from credit_monitor.contracts import InvalidBatch
 from credit_monitor.data import TARGET
 
@@ -107,3 +107,45 @@ def test_prediction_does_not_fit_scaler_on_calibration(reference, calibration):
     calibration["LIMIT_BAL"] *= 100
     predict_scores(models.model, calibration.drop(columns=TARGET))
     np.testing.assert_array_equal(models.model.named_steps["scale"].mean_, before)
+
+
+def test_binary_metrics_match_hand_calculated_example():
+    metrics = evaluate_binary([0, 0, 1, 1], [0.1, 0.4, 0.35, 0.8], threshold=0.4)
+    assert metrics["rows"] == 4
+    assert metrics["roc_auc"] == pytest.approx(0.75)
+    assert metrics["average_precision"] == pytest.approx(5 / 6)
+    assert metrics["precision"] == pytest.approx(0.5)
+    assert metrics["recall"] == pytest.approx(0.5)
+    assert metrics["f1"] == pytest.approx(0.5)
+    assert metrics["brier"] == pytest.approx(0.158125)
+    assert metrics["confusion_matrix"] == [[1, 1], [1, 1]]
+
+
+def test_threshold_maximizes_grid_f1_and_breaks_ties_towards_larger_value():
+    assert select_threshold([0, 0, 1, 1], [0.1, 0.4, 0.35, 0.8]) == 0.35
+    assert select_threshold([0, 1], [0.2, 0.8]) == 0.8
+    with pytest.raises(ValueError, match="classes"):
+        select_threshold([0, 0], [0.2, 0.8])
+
+
+@pytest.mark.parametrize("labels,scores", [([], []), ([0,1],[0.5]), ([0,2],[0.1,0.9]),
+    ([0,1],[float('nan'),0.9]), ([0,1],[-0.1,0.9]), ([0,1],[0.1,1.1]),
+    ([[0],[1]],[0.1,0.9]), ([0,1],[[0.1],[0.9]])])
+def test_metrics_and_threshold_reject_invalid_inputs(labels, scores):
+    with pytest.raises(ValueError):
+        evaluate_binary(labels, scores, threshold=0.5)
+    with pytest.raises(ValueError):
+        select_threshold(labels, scores)
+
+
+@pytest.mark.parametrize("threshold", [-1, 1.1, float('nan')])
+def test_metrics_reject_invalid_threshold(threshold):
+    with pytest.raises(ValueError):
+        evaluate_binary([0,1], [0.1,0.8], threshold)
+
+
+def test_single_class_evaluation_marks_discrimination_metrics_unavailable():
+    metrics = evaluate_binary([0,0], [0.1,0.2], 0.5)
+    assert metrics["roc_auc"] is None
+    assert metrics["average_precision"] is None
+    assert metrics["confusion_matrix"] == [[2,0],[0,0]]

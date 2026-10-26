@@ -8,6 +8,8 @@ import pandas as pd
 from sklearn.dummy import DummyClassifier
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (average_precision_score, brier_score_loss, confusion_matrix,
+                             f1_score, precision_score, recall_score, roc_auc_score)
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -19,6 +21,54 @@ from credit_monitor.data import TARGET
 class ModelPair:
     model: Pipeline
     dummy: DummyClassifier
+
+
+def evaluate_binary(labels, scores, threshold):
+    """Metricas agregadas; linhas da matriz=situacao real, colunas=predicao, ordem0/1."""
+    y, p = _validated_arrays(labels, scores)
+    if not np.isfinite(threshold) or not 0 <= threshold <= 1:
+        raise ValueError("Limiar precisa estar entre 0 e 1")
+    predicted = (p >= threshold).astype(int)
+    both_classes = len(np.unique(y)) == 2
+    return {
+        "rows": len(y), "threshold": float(threshold),
+        "prevalence": float(y.mean()), "predicted_positive_rate": float(predicted.mean()),
+        "roc_auc": float(roc_auc_score(y, p)) if both_classes else None,
+        "average_precision": float(average_precision_score(y, p)) if both_classes else None,
+        "precision": float(precision_score(y, predicted, zero_division=0)),
+        "recall": float(recall_score(y, predicted, zero_division=0)),
+        "f1": float(f1_score(y, predicted, zero_division=0)),
+        "brier": float(brier_score_loss(y, p, pos_label=1)),
+        "confusion_matrix": confusion_matrix(y, predicted, labels=[0, 1]).tolist(),
+    }
+
+
+def select_threshold(labels, scores):
+    """Maximiza F1 na grade fixa 0.05..0.95; desempate pelo maior limiar.
+
+    Deve receber apenas calibracao. Nao otimiza custos financeiros nem probabilidades.
+    """
+    y, p = _validated_arrays(labels, scores)
+    if len(np.unique(y)) != 2:
+        raise ValueError("Selecao do limiar requer as duas classes")
+    candidates = []
+    for threshold in np.arange(5, 96) / 100:
+        predicted = p >= threshold
+        tp = int(((y == 1) & predicted).sum())
+        fp = int(((y == 0) & predicted).sum())
+        fn = int(((y == 1) & ~predicted).sum())
+        score = 2 * tp / (2 * tp + fp + fn)
+        candidates.append((score, float(threshold)))
+    return max(candidates)[1]
+
+
+def _validated_arrays(labels, scores):
+    y, p = np.asarray(labels), np.asarray(scores, dtype=float)
+    if y.ndim != 1 or p.ndim != 1 or len(y) == 0 or len(y) != len(p):
+        raise ValueError("Rotulos e scores precisam de vetores nao vazios com mesmo tamanho")
+    if not np.isin(y, [0, 1]).all() or not np.isfinite(p).all() or ((p < 0) | (p > 1)).any():
+        raise ValueError("Rotulos binarios e probabilidades finitas entre0 e1 sao obrigatorios")
+    return y.astype(int), p
 
 
 def train_models(reference: pd.DataFrame) -> ModelPair:
