@@ -1,10 +1,12 @@
 import numpy as np
 import pandas as pd
 import pytest
+import json
 
 from credit_monitor.baseline import FEATURES, calibration_without_seen_profiles, evaluate_binary, predict_scores, select_threshold, train_models
 from credit_monitor.contracts import InvalidBatch
 from credit_monitor.data import TARGET
+from credit_monitor.model_store import load_models, save_models
 
 
 @pytest.fixture
@@ -149,3 +151,58 @@ def test_single_class_evaluation_marks_discrimination_metrics_unavailable():
     assert metrics["roc_auc"] is None
     assert metrics["average_precision"] is None
     assert metrics["confusion_matrix"] == [[2,0],[0,0]]
+
+
+def test_saved_model_restores_identical_probabilities_and_decision(reference, calibration, tmp_path):
+    models = train_models(reference)
+    path = tmp_path / "model"
+    thresholds = {"model": 0.35, "dummy": 0.25}
+    save_models(models, path, thresholds=thresholds, metadata={"purpose": "test"})
+    restored, manifest = load_models(path, trusted=True)
+    assert manifest["thresholds"] == thresholds
+    batch = calibration.drop(columns=TARGET)
+    for name in ("model", "dummy"):
+        p = predict_scores(getattr(models, name), batch)
+        q = predict_scores(getattr(restored, name), batch)
+        np.testing.assert_array_equal(p, q)
+        np.testing.assert_array_equal(p >= thresholds[name], q >= manifest["thresholds"][name])
+
+
+def test_loader_requires_explicit_trust_before_accessing_files(tmp_path):
+    with pytest.raises(ValueError, match="trusted"):
+        load_models(tmp_path)
+
+
+@pytest.mark.parametrize("corruption", ["payload", "version", "features", "threshold"])
+def test_loader_rejects_corruption_or_incompatible_metadata(reference, tmp_path, corruption):
+    path = tmp_path / "model"
+    save_models(train_models(reference), path, thresholds={"model": 0.35, "dummy": 0.25}, metadata={})
+    if corruption == "payload":
+        (path / "models.pkl").write_bytes(b"corrupt payload")
+    else:
+        manifest = json.loads((path / "manifest.json").read_text())
+        if corruption == "version":
+            manifest["versions"]["scikit-learn"] = "0.0.0"
+        elif corruption == "features":
+            manifest["features"] = ["ID"]
+        else:
+            manifest["thresholds"]["model"] = 2
+        (path / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValueError):
+        load_models(path, trusted=True)
+
+
+def test_save_never_overwrites_existing_artifacts(reference, tmp_path):
+    path = tmp_path / "model"
+    path.mkdir()
+    (path / "keep.txt").write_text("existing")
+    with pytest.raises(FileExistsError):
+        save_models(train_models(reference), path, thresholds={"model": 0.35, "dummy": 0.25}, metadata={})
+    assert (path / "keep.txt").read_text() == "existing"
+
+
+def test_save_rejects_invalid_threshold_before_creating_directory(reference, tmp_path):
+    path = tmp_path / "model"
+    with pytest.raises(ValueError):
+        save_models(train_models(reference), path, thresholds={"model": float('nan'), "dummy": 0.25}, metadata={})
+    assert not path.exists()
