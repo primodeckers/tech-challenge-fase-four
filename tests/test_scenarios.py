@@ -1,11 +1,16 @@
 import numpy as np
 import pandas as pd
 import pytest
+import hashlib
+import json
+from pathlib import Path
 
 from credit_monitor.contracts import InvalidBatch, validate_batch
 from credit_monitor.baseline import predict_scores, train_models
 from credit_monitor.data import TARGET
 from credit_monitor.scenarios import build_scenarios, copy_control, predict_scenarios
+from credit_monitor.model_store import save_models
+from credit_monitor.scenario_run import run_scenarios
 
 
 @pytest.fixture
@@ -135,3 +140,86 @@ def test_invalid_pair_is_rejected_before_any_inference(production, case):
 def test_invalid_threshold_is_rejected_before_inference(production, threshold):
     with pytest.raises(ValueError):
         predict_scenarios(None, threshold, build_scenarios(production))
+
+
+@pytest.fixture
+def assets(tmp_path, production):
+    data, model = tmp_path / "data", tmp_path / "model"
+    data.mkdir()
+    reference = production.copy()
+    reference["ID"] += 10000
+    manifest = {"partitions": {}}
+    for name, frame in [("reference", reference), ("production", production)]:
+        path = data / f"{name}.csv"
+        frame.to_csv(path, index=False)
+        manifest["partitions"][name] = {"file": path.name, "rows": len(frame),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+    raw = json.dumps(manifest).encode()
+    (data / "manifest.json").write_bytes(raw)
+    save_models(train_models(reference), model, thresholds={"model": 0.27, "dummy": 0.22},
+                metadata={"data_manifest_sha256": hashlib.sha256(raw).hexdigest()})
+    return data, model
+
+
+def test_export_reproduces_all_files_and_preserves_inputs(assets, tmp_path, production):
+    data, model = assets
+    before = {p: p.read_bytes() for folder in (data, model) for p in folder.iterdir()}
+    a, b = tmp_path / "run1", tmp_path / "run2"
+    first = run_scenarios(data, model, a, trusted_model=True)
+    assert first == run_scenarios(data, model, b, trusted_model=True)
+    assert first["threshold"] == 0.27
+    assert first["seed"] is None
+    assert first["changed_cells"] == {"LIMIT_BAL": 4, "PAY_AMT1": 3}
+    assert first["production_profiles_seen_in_reference"] == 4
+    pd.testing.assert_frame_equal(pd.read_csv(a / "control.csv"), production)
+    for name, info in first["files"].items():
+        assert (a / name).read_bytes() == (b / name).read_bytes()
+        assert hashlib.sha256((a / name).read_bytes()).hexdigest() == info["sha256"]
+        assert len(pd.read_csv(a / name)) == info["rows"] == 4
+    assert (a / "manifest.json").read_bytes() == (b / "manifest.json").read_bytes()
+    for path, payload in before.items():
+        assert path.read_bytes() == payload
+
+
+def test_scenario_run_requires_trust_and_never_overwrites(assets, tmp_path):
+    data, model = assets
+    output = tmp_path / "run"
+    with pytest.raises(ValueError, match="trusted"):
+        run_scenarios(data, model, output)
+    assert not output.exists()
+    run_scenarios(data, model, output, trusted_model=True)
+    original = (output / "manifest.json").read_bytes()
+    with pytest.raises(FileExistsError):
+        run_scenarios(data, model, output, trusted_model=True)
+    assert (output / "manifest.json").read_bytes() == original
+
+
+@pytest.mark.parametrize("corruption", ["production", "reference", "lineage"])
+def test_changed_input_or_foreign_data_lineage_prevents_export(assets, tmp_path, corruption):
+    data, model = assets
+    if corruption == "lineage":
+        with (data / "manifest.json").open("ab") as stream:
+            stream.write(b" ")
+    else:
+        with (data / f"{corruption}.csv").open("ab") as stream:
+            stream.write(b"changed")
+    output = tmp_path / "run"
+    with pytest.raises(ValueError):
+        run_scenarios(data, model, output, trusted_model=True)
+    assert not output.exists()
+
+
+def test_write_failure_never_leaves_success_manifest(assets, tmp_path, monkeypatch):
+    data, model = assets
+    original_write = Path.write_bytes
+
+    def fail_drift(path, payload):
+        if path.name == "data_drift.csv":
+            raise OSError("synthetic write failure")
+        return original_write(path, payload)
+
+    monkeypatch.setattr(Path, "write_bytes", fail_drift)
+    output = tmp_path / "run"
+    with pytest.raises(OSError):
+        run_scenarios(data, model, output, trusted_model=True)
+    assert not (output / "manifest.json").exists()
