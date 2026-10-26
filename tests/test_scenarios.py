@@ -4,7 +4,7 @@ import pytest
 
 from credit_monitor.contracts import InvalidBatch, validate_batch
 from credit_monitor.data import TARGET
-from credit_monitor.scenarios import copy_control
+from credit_monitor.scenarios import build_scenarios, copy_control
 
 
 @pytest.fixture
@@ -37,3 +37,44 @@ def test_control_rejects_invalid_production_instead_of_repairing(production):
     with pytest.raises(InvalidBatch):
         copy_control(production)
     assert production.loc[0, "LIMIT_BAL"] == 0
+
+
+@pytest.mark.parametrize("labeled", [True, False])
+def test_drift_changes_exactly_two_features_with_hand_calculated_values(production, labeled):
+    if not labeled:
+        production = production.drop(columns=TARGET)
+    original = production.copy(deep=True)
+    scenarios = build_scenarios(production)
+    assert set(scenarios) == {"control", "data_drift"}
+    control, drift = scenarios["control"], scenarios["data_drift"]
+    pd.testing.assert_frame_equal(control, original)
+    assert drift.LIMIT_BAL.tolist() == [15000, 30001, 45000, 60001]
+    assert drift.PAY_AMT1.tolist() == [0, 0, 500, 1000]
+    unchanged = [c for c in original if c not in ("LIMIT_BAL", "PAY_AMT1")]
+    pd.testing.assert_frame_equal(drift[unchanged], original[unchanged])
+    assert all(dtype == np.dtype("int64") for dtype in drift.dtypes)
+    pd.testing.assert_frame_equal(production, original)
+    validate_batch(drift, mode="training" if labeled else "inference")
+
+
+def test_scenarios_are_repeatable_and_do_not_share_mutable_data(production):
+    first, second = build_scenarios(production), build_scenarios(production)
+    for name in first:
+        pd.testing.assert_frame_equal(first[name], second[name])
+    first["data_drift"].loc[0, "AGE"] = 50
+    assert first["control"].loc[0, "AGE"] == 19
+    assert production.loc[0, "AGE"] == 19
+
+
+def test_drift_rejects_overflow_without_silently_wrapping_or_mutating(production):
+    production.loc[0, "LIMIT_BAL"] = np.iinfo(np.int64).max
+    original = production.copy(deep=True)
+    with pytest.raises(ValueError, match="int64"):
+        build_scenarios(production)
+    pd.testing.assert_frame_equal(production, original)
+
+
+def test_drift_rejects_when_payment_feature_cannot_change(production):
+    production["PAY_AMT1"] = 0
+    with pytest.raises(ValueError, match="PAY_AMT1"):
+        build_scenarios(production)
