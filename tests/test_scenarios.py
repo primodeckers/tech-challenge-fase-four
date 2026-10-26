@@ -3,8 +3,9 @@ import pandas as pd
 import pytest
 
 from credit_monitor.contracts import InvalidBatch, validate_batch
+from credit_monitor.baseline import predict_scores, train_models
 from credit_monitor.data import TARGET
-from credit_monitor.scenarios import build_scenarios, copy_control
+from credit_monitor.scenarios import build_scenarios, copy_control, predict_scenarios
 
 
 @pytest.fixture
@@ -78,3 +79,59 @@ def test_drift_rejects_when_payment_feature_cannot_change(production):
     production["PAY_AMT1"] = 0
     with pytest.raises(ValueError, match="PAY_AMT1"):
         build_scenarios(production)
+
+
+def test_predictions_use_frozen_model_threshold_and_preserve_pairing(production):
+    model = train_models(production).model
+    coef = model.named_steps["classifier"].coef_.copy()
+    mean = model.named_steps["scale"].mean_.copy()
+    scenarios = build_scenarios(production)
+    first = predict_scenarios(model, 0.27, scenarios)
+    repeated = predict_scenarios(model, 0.27, scenarios)
+    for name in scenarios:
+        result = first[name]
+        pd.testing.assert_frame_equal(result, repeated[name])
+        assert result.ID.tolist() == production.ID.tolist()
+        assert result.columns.tolist() == ["ID", "probability_default", "prediction"]
+        p = result.probability_default.to_numpy()
+        assert np.isfinite(p).all() and ((p >= 0) & (p <= 1)).all()
+        np.testing.assert_array_equal(result.prediction, (p >= 0.27).astype(int))
+        np.testing.assert_array_equal(p, predict_scores(model, scenarios[name].drop(columns=TARGET)))
+    np.testing.assert_array_equal(coef, model.named_steps["classifier"].coef_)
+    np.testing.assert_array_equal(mean, model.named_steps["scale"].mean_)
+
+
+def test_unlabeled_scenarios_produce_same_predictions(production):
+    model = train_models(production).model
+    labeled = predict_scenarios(model, 0.27, build_scenarios(production))
+    unlabeled = predict_scenarios(model, 0.27, build_scenarios(production.drop(columns=TARGET)))
+    for name in labeled:
+        pd.testing.assert_frame_equal(labeled[name], unlabeled[name])
+
+
+@pytest.mark.parametrize("case", ["invalid_drift", "mismatched_ids", "mismatched_labels", "missing_scenario"])
+def test_invalid_pair_is_rejected_before_any_inference(production, case):
+    scenarios = build_scenarios(production)
+    if case == "invalid_drift":
+        scenarios["data_drift"].loc[0, "AGE"] = 18
+    elif case == "mismatched_ids":
+        scenarios["data_drift"].loc[0, "ID"] = 99999
+    elif case == "mismatched_labels":
+        scenarios["data_drift"].loc[0, TARGET] = 1
+    else:
+        del scenarios["data_drift"]
+
+    class NeverCalled:
+        classes_ = [0, 1]
+
+        def predict_proba(self, frame):
+            pytest.fail("Prediction reached invalid scenario pair")
+
+    with pytest.raises((ValueError, InvalidBatch)):
+        predict_scenarios(NeverCalled(), 0.27, scenarios)
+
+
+@pytest.mark.parametrize("threshold", [-1, 2, float('nan')])
+def test_invalid_threshold_is_rejected_before_inference(production, threshold):
+    with pytest.raises(ValueError):
+        predict_scenarios(None, threshold, build_scenarios(production))
