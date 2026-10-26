@@ -2,11 +2,13 @@ import numpy as np
 import pandas as pd
 import pytest
 import json
+import hashlib
 
 from credit_monitor.baseline import FEATURES, calibration_without_seen_profiles, evaluate_binary, predict_scores, select_threshold, train_models
 from credit_monitor.contracts import InvalidBatch
 from credit_monitor.data import TARGET
 from credit_monitor.model_store import load_models, save_models
+from credit_monitor.experiment import run_baseline
 
 
 @pytest.fixture
@@ -206,3 +208,52 @@ def test_save_rejects_invalid_threshold_before_creating_directory(reference, tmp
     with pytest.raises(ValueError):
         save_models(train_models(reference), path, thresholds={"model": float('nan'), "dummy": 0.25}, metadata={})
     assert not path.exists()
+
+
+def write_partition_fixture(path, reference, calibration):
+    path.mkdir()
+    manifest = {"seed": 42, "partitions": {}}
+    for name, frame in [("reference", reference), ("calibration", calibration)]:
+        file = path / f"{name}.csv"
+        frame.to_csv(file, index=False)
+        manifest["partitions"][name] = {"file": file.name, "rows": len(frame),
+                                      "sha256": hashlib.sha256(file.read_bytes()).hexdigest()}
+    (path / "manifest.json").write_text(json.dumps(manifest))
+
+
+def test_experiment_runs_without_production_and_reproduces_results(reference, calibration, tmp_path):
+    data = tmp_path / "data"
+    write_partition_fixture(data, reference, calibration)
+    report = run_baseline(data, tmp_path / "run1")
+    repeated = run_baseline(data, tmp_path / "run2")
+    assert report == repeated
+    assert report["overlap_audit"] == {"original_rows": 20, "excluded_seen_profiles": 0, "retained_rows": 20}
+    assert report["reference_rows"] == 80
+    assert report["production_used"] is False
+    assert report["model"]["selected"]["rows"] == 20
+    assert report["dummy"]["selected"]["roc_auc"] == 0.5
+    assert json.loads((tmp_path / "run1/report.json").read_text()) == report
+    loaded, manifest = load_models(tmp_path / "run1", trusted=True)
+    assert manifest["thresholds"]["model"] == report["model"]["selected"]["threshold"]
+    assert len(predict_scores(loaded.model, calibration.drop(columns=TARGET))) == 20
+
+
+def test_experiment_records_exclusions_and_full_calibration_sensitivity(reference, calibration, tmp_path):
+    calibration.loc[0, list(FEATURES)] = reference.loc[0, list(FEATURES)]
+    data = tmp_path / "data"
+    write_partition_fixture(data, reference, calibration)
+    report = run_baseline(data, tmp_path / "run")
+    assert report["overlap_audit"]["excluded_seen_profiles"] == 1
+    assert report["model"]["selected"]["rows"] == 19
+    assert report["model"]["full_calibration_sensitivity"]["rows"] == 20
+    assert report["model"]["selected"]["threshold"] == report["model"]["full_calibration_sensitivity"]["threshold"]
+
+
+def test_experiment_refuses_changed_data_before_saving_model(reference, calibration, tmp_path):
+    data = tmp_path / "data"
+    write_partition_fixture(data, reference, calibration)
+    with (data / "reference.csv").open("a") as stream:
+        stream.write("corrupt")
+    with pytest.raises(ValueError, match="SHA-256"):
+        run_baseline(data, tmp_path / "run")
+    assert not (tmp_path / "run").exists()
