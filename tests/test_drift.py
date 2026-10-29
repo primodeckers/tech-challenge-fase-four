@@ -306,3 +306,63 @@ def test_report_failure_does_not_leave_success_manifest(inputs, tmp_path, monkey
     with pytest.raises(OSError):
         run_drift(*inputs, tmp_path / "run", n_resamples=20)
     assert not (tmp_path / "run/manifest.json").exists()
+
+
+@pytest.mark.parametrize("corruption", ["empty_cuts", "changed_cuts", "unknown_status", "nan_psi", "ks_above_one", "wrong_constant", "smoothing"])
+def test_malformed_policy_cannot_suppress_alerts(reference, calibration, corruption):
+    policy = calibrate_policy(reference, calibration, n_resamples=20)
+    limits = policy["features"]["LIMIT_BAL"]
+    if corruption == "empty_cuts":
+        limits["cutpoints"] = []
+    elif corruption == "changed_cuts":
+        limits["cutpoints"][0] += 1
+    elif corruption == "unknown_status":
+        limits["status"] = "unknown"
+        limits["psi_threshold"] = float('nan')
+    elif corruption == "nan_psi":
+        limits["psi_threshold"] = float('nan')
+    elif corruption == "ks_above_one":
+        limits["ks_threshold"] = 2
+    elif corruption == "wrong_constant":
+        limits["status"] = "constant_reference"
+        limits["psi_threshold"] = limits["ks_threshold"] = None
+    else:
+        policy["smoothing"] = 1e9
+    with pytest.raises(ValueError):
+        compare_drift(reference, calibration, policy)
+
+
+def test_execution_consumes_saved_policy_and_rejects_corruption(inputs, tmp_path, monkeypatch):
+    from credit_monitor import drift_run
+    original = drift_run._write_json
+
+    def corrupt_policy(path, value):
+        original(path, value)
+        if path.name == "policy.json":
+            saved = json.loads(path.read_text())
+            saved["features"]["LIMIT_BAL"]["cutpoints"] = []
+            path.write_text(json.dumps(saved))
+
+    monkeypatch.setattr(drift_run, "_write_json", corrupt_policy)
+    with pytest.raises(ValueError):
+        run_drift(*inputs, tmp_path / "run", n_resamples=20)
+    assert not (tmp_path / "run/manifest.json").exists()
+
+
+def test_overview_uses_actual_alpha_instead_of_hardcoded_value(reference, calibration, tmp_path):
+    from credit_monitor.drift_report import write_overview
+    from html.parser import HTMLParser
+
+    policy = calibrate_policy(reference, calibration, n_resamples=20, alpha=0.01)
+    result = compare_drift(reference, calibration, policy)
+    output = tmp_path / "overview.html"
+    write_overview({"control": result}, output)
+
+    class VisibleText(HTMLParser):
+        def __init__(self):
+            super().__init__(); self.parts = []
+        def handle_data(self, data):
+            self.parts.append(data)
+
+    parser = VisibleText(); parser.feed(output.read_text(encoding="utf-8"))
+    assert 'p ajustado ≤ 0,01' in ''.join(parser.parts)

@@ -55,6 +55,7 @@ def run_drift(data_dir, scenarios_dir, output_dir, *, n_resamples=200, seed=42):
     policy = calibrate_policy(reference, calibration, n_resamples=n_resamples, seed=seed)
     output_dir.mkdir(parents=True, exist_ok=False)
     _write_json(output_dir / "policy.json", policy)
+    policy = json.loads((output_dir / "policy.json").read_text(encoding="utf-8"))
     # Apenas apos fixar politica, ler/validar os dados de producao e cenarios.
     production = _partition(data_dir, "production", source)
     if set(production.ID) & (set(reference.ID) | set(calibration.ID)):

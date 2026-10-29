@@ -68,7 +68,7 @@ def write_overview(comparisons, output_html):
         title = "Controle" if scenario == "control" else "Data Drift simulado"
         sections.append(f'<section><h2>{title}</h2><p>Referência: {result["n_reference"]:,} registros · '
             f'Lote: {result["n_current"]:,} · Alertas: {len(result["alerted_features"])} / {len(FEATURES)} · '
-            f'<a href="{scenario}.html">Abrir Evidently</a></p><div class="scroll"><table>'
+            f'<a href="{scenario}.html">Abrir Evidently</a></p><p>Critério de significância: p ajustado ≤ {number(result["alpha"]).replace(".", ",")}</p><div class="scroll"><table>'
             '<thead><tr><th>Feature</th><th>PSI</th><th>Limite PSI</th><th>KS D</th><th>Limite D</th>'
             '<th>p ajustado (Holm)</th><th>Estado</th><th>Decisão</th></tr></thead><tbody>' + ''.join(rows) + '</tbody></table></div></section>')
     html = '<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' \
@@ -78,7 +78,7 @@ def write_overview(comparisons, output_html):
         '.alert{background:#42283c}.scroll{overflow:auto}.note{color:#afc0d7;max-width:1100px}.tag{color:#f18bb3;font-size:12px;letter-spacing:2px}</style><main>' \
         '<p class="tag">TECH CHALLENGE / FASE 04</p><h1>Data Drift · PSI + KS</h1>' \
         '<p class="note">Bins fixados na referência; envelopes definidos por bootstrap da calibração antes da produção. '
-    html += 'Alerta exige PSI e KS D acima dos respectivos limites e p ajustado ≤ 0,05. Mudança de suporte constante é sinalizada separadamente.</p>' \
+    html += 'Alerta exige PSI e KS D acima dos respectivos limites e p ajustado dentro do nível α indicado em cada cenário. Mudança de suporte constante é sinalizada separadamente.</p>' \
         '<p class="note">PSI e KS D são adimensionais (D entre 0 e 1). p-valores KS são aproximações contínuas em dados com empates; '
     html += 'Holm corrige as 20 features por comparação, não o monitoramento repetido no tempo. p não é a probabilidade de uma hipótese ser verdadeira. '
     html += 'Os envelopes são critérios operacionais, sem garantia de taxa global de falso alerta. Sem alerta não comprova estabilidade. Não é teste de Concept Drift.</p>'

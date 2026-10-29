@@ -64,10 +64,7 @@ def calibrate_policy(reference, calibration, *, n_resamples=200, seed=42, quanti
 def compare_drift(reference, current, policy):
     """Compara um lote usando politica ja definida, sem recalibrar limiares."""
     reference, current = _frame(reference), _frame(current)
-    if policy["format_version"] != 1 or set(policy["features"]) != set(FEATURES):
-        raise ValueError("Formato/features da politica incompativeis")
-    if _reference_digest(reference) != policy["reference_sha256"]:
-        raise ValueError("Politica nao pertence a esta referencia")
+    _validate_policy(reference, policy)
     minimum = policy["min_samples"]
     _minimum(minimum)
     if not 0 < policy["alpha"] < 1:
@@ -80,10 +77,6 @@ def compare_drift(reference, current, policy):
     features, pvalues = {}, {}
     for column in FEATURES:
         limits = policy["features"][column]
-        if limits["status"] == "ok" and any(
-            not np.isfinite(limits[key]) or limits[key] < 0 for key in ("psi_threshold", "ks_threshold")
-        ):
-            raise ValueError("Limiares invalidos na politica")
         psi = population_stability_index(reference[column], current[column], cutpoints=limits["cutpoints"],
                                         min_samples=minimum, smoothing=policy["smoothing"])
         ks = ks_comparison(reference[column], current[column], min_samples=minimum)
@@ -110,9 +103,50 @@ def compare_drift(reference, current, policy):
             info["reason"] = "psi_and_ks" if info["alert"] else "no_alert"
     alerts = [column for column, info in features.items() if info["alert"] is True]
     return {"status": status, "n_reference": len(reference), "n_current": len(current),
+            "alpha": policy["alpha"],
             "drift_detected": bool(alerts) if status == "ok" else None,
             "alerted_features": alerts, "correction": "Holm across evaluated features per comparison",
             "features": features}
+
+
+def _validate_policy(reference, policy):
+    """Falha fechada: rejeitar configuracao incompatível antes de calcular scores."""
+    required = {"format_version", "features", "reference_sha256", "reference_rows",
+                "calibration_rows", "min_samples", "n_resamples", "quantile", "alpha", "smoothing", "method"}
+    if not isinstance(policy, dict) or not required.issubset(policy):
+        raise ValueError("Politica incompleta")
+    if policy["format_version"] != 1 or set(policy["features"]) != set(FEATURES):
+        raise ValueError("Formato/features da politica incompativeis")
+    if _reference_digest(reference) != policy["reference_sha256"] or len(reference) != policy["reference_rows"]:
+        raise ValueError("Politica nao pertence a esta referencia")
+    _minimum(policy["min_samples"])
+    if not isinstance(policy["calibration_rows"], int) or policy["calibration_rows"] < policy["min_samples"]:
+        raise ValueError("Tamanho de calibracao invalido")
+    if policy["smoothing"] != 0.5 or policy["method"] != "calibration_bootstrap_envelope_not_confidence_bound":
+        raise ValueError("Metodo/suavizacao incompatível com a versao da politica")
+    if not isinstance(policy["n_resamples"], int) or policy["n_resamples"] < 20 or not 0 < policy["quantile"] < 1:
+        raise ValueError("Configuracao de reamostragem invalida")
+    for column in FEATURES:
+        limits = policy["features"][column]
+        if not isinstance(limits, dict) or not {"status", "cutpoints", "psi_threshold", "ks_threshold"}.issubset(limits):
+            raise ValueError("Configuracao de feature incompleta")
+        expected_cuts = _cuts(_vector(reference[column]))
+        actual_cuts = np.asarray(limits["cutpoints"], dtype=float)
+        if actual_cuts.ndim != 1 or not np.array_equal(actual_cuts, expected_cuts):
+            raise ValueError("Cortes da politica divergem dos bins da referencia")
+        constant = reference[column].nunique() == 1
+        if limits["status"] != ("constant_reference" if constant else "ok"):
+            raise ValueError("Estado da feature diverge da referencia")
+        if constant:
+            if limits["psi_threshold"] is not None or limits["ks_threshold"] is not None:
+                raise ValueError("Referencia constante nao possui limiares numericos")
+        else:
+            for key in ("psi_threshold", "ks_threshold"):
+                value = limits[key]
+                if not isinstance(value, (int, float)) or isinstance(value, bool) or not np.isfinite(value) or value < 0:
+                    raise ValueError("Limiar invalido na politica")
+            if limits["ks_threshold"] > 1:
+                raise ValueError("Limiar KS D deve estar entre0 e1")
 
 
 def ks_comparison(reference, current, *, min_samples=200):
