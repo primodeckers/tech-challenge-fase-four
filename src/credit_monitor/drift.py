@@ -1,6 +1,33 @@
 """Estatistica de Data Drift com referencia fixa e estados explicitos."""
 
 import numpy as np
+from scipy.stats import ks_2samp
+
+
+def ks_comparison(reference, current, *, min_samples=200):
+    """KS bilateral; D e descritivo, p assintotico assume distribuicao continua."""
+    _minimum(min_samples)
+    x, y = _vector(reference), _vector(current)
+    result = {"n_reference": len(x), "n_current": len(y), "statistic": None, "pvalue": None,
+              "ties": bool(len(np.unique(np.r_[x, y])) < len(x) + len(y)),
+              "pvalue_method": "asymptotic_continuous_approximation"}
+    if min(len(x), len(y)) < min_samples:
+        return {**result, "status": "insufficient_samples"}
+    comparison = ks_2samp(x, y, alternative="two-sided", method="asymp", nan_policy="raise")
+    return {**result, "status": "ok", "statistic": float(comparison.statistic),
+            "pvalue": float(comparison.pvalue)}
+
+
+def holm_adjust(pvalues):
+    """Holm step-down para a familia de features avaliadas, sem descartar testes."""
+    if any(not np.isfinite(p) or not 0 <= p <= 1 for p in pvalues.values()):
+        raise ValueError("p-valores precisam estar entre0 e1")
+    ordered = sorted(pvalues, key=lambda name: (pvalues[name], name))
+    adjusted, previous = {}, 0.0
+    for rank, name in enumerate(ordered):
+        previous = max(previous, min(1.0, (len(ordered) - rank) * pvalues[name]))
+        adjusted[name] = float(previous)
+    return {name: adjusted[name] for name in pvalues}
 
 
 def _vector(values):

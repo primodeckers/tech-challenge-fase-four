@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from credit_monitor.drift import population_stability_index
+from credit_monitor.drift import holm_adjust, ks_comparison, population_stability_index
 
 
 def test_psi_is_zero_for_identical_samples():
@@ -57,3 +57,35 @@ def test_psi_reports_small_samples_and_constants_explicitly():
 def test_psi_rejects_invalid_configuration(kwargs):
     with pytest.raises(ValueError):
         population_stability_index(np.arange(400), np.arange(400), **kwargs)
+
+
+def test_ks_identical_and_disjoint_samples_report_effect_and_pvalue():
+    same = ks_comparison(np.arange(400), np.arange(400))
+    assert same["statistic"] == 0 and same["pvalue"] == 1
+    shifted = ks_comparison(np.arange(400), np.arange(400) + 1000)
+    assert shifted["statistic"] == 1 and shifted["pvalue"] < 0.001
+    assert shifted["n_reference"] == shifted["n_current"] == 400
+
+
+def test_ks_reports_ties_and_small_samples_without_hiding_them():
+    tied = ks_comparison([0] * 300, [1] * 300)
+    assert tied["ties"] is True
+    assert tied["pvalue_method"] == "asymptotic_continuous_approximation"
+    small = ks_comparison([0, 1], [0, 2])
+    assert small["status"] == "insufficient_samples"
+    assert small["statistic"] is None and small["pvalue"] is None
+    with pytest.raises(ValueError):
+        ks_comparison([float('nan')], [1])
+
+
+def test_holm_adjustment_matches_hand_calculation_and_preserves_names():
+    assert holm_adjust({"c": 0.03, "a": 0.01, "b": 0.02}) == {
+        "c": pytest.approx(0.04), "a": pytest.approx(0.03), "b": pytest.approx(0.04)}
+    assert holm_adjust({"a": 0.8, "b": 0.9}) == {"a": 1.0, "b": 1.0}
+    assert holm_adjust({}) == {}
+
+
+@pytest.mark.parametrize("p", [-0.1, 1.1, float('nan')])
+def test_holm_rejects_invalid_pvalues(p):
+    with pytest.raises(ValueError):
+        holm_adjust({"feature": p})
