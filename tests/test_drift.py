@@ -5,6 +5,8 @@ import json
 
 from credit_monitor.drift import calibrate_policy, compare_drift, holm_adjust, ks_comparison, population_stability_index
 from credit_monitor.contracts import InvalidBatch
+from credit_monitor.baseline import FEATURES
+from credit_monitor.drift_report import export_evidently
 
 
 def test_psi_is_zero_for_identical_samples():
@@ -179,3 +181,41 @@ def test_policy_rejects_overlapping_ids_and_too_small_calibration(reference, cal
         calibrate_policy(reference, reference, n_resamples=20)
     with pytest.raises(ValueError):
         calibrate_policy(reference, calibration.iloc[:10], n_resamples=20)
+
+
+def test_evidently_html_and_metrics_use_same_policy_and_only_model_features(reference, calibration, tmp_path, monkeypatch):
+    from evidently import Dataset
+    original = Dataset.from_pandas
+    observed = []
+
+    def inspect_dataset(data, *args, **kwargs):
+        observed.append(set(data.columns))
+        return original(data, *args, **kwargs)
+
+    monkeypatch.setattr(Dataset, "from_pandas", inspect_dataset)
+    policy = calibrate_policy(reference, calibration, n_resamples=20)
+    calibration["LIMIT_BAL"] *= 3
+    calibration["PAY_AMT1"] //= 2
+    output = tmp_path / "drift.html"
+    result = export_evidently(reference, calibration, policy, output)
+    assert output.stat().st_size > 1000
+    assert "LIMIT_BAL" in output.read_text(encoding="utf-8")
+    assert set(result["comparison"]["alerted_features"]) == {"LIMIT_BAL", "PAY_AMT1"}
+    metrics = result["evidently"]["metrics"]
+    count = next(metric for metric in metrics if metric["config"]["type"].endswith("DriftedColumnsCount"))
+    assert count["value"]["count"] == 2
+    assert len(observed) == 2 and all(columns == set(FEATURES) for columns in observed)
+
+
+def test_evidently_reports_control_and_refuses_unavailable_or_existing_output(reference, calibration, tmp_path):
+    policy = calibrate_policy(reference, calibration, n_resamples=20)
+    output = tmp_path / "control.html"
+    result = export_evidently(reference, calibration, policy, output)
+    assert result["comparison"]["alerted_features"] == []
+    saved = output.read_bytes()
+    with pytest.raises(FileExistsError):
+        export_evidently(reference, calibration, policy, output)
+    assert output.read_bytes() == saved
+    with pytest.raises(ValueError, match="indisponivel"):
+        export_evidently(reference, calibration.iloc[:10], policy, tmp_path / "small.html")
+    assert not (tmp_path / "small.html").exists()
