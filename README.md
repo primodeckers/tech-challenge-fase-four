@@ -6,7 +6,7 @@
   <a href="https://www.python.org/downloads/release/python-31210/"><img src="https://img.shields.io/badge/Python-3.12.10-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white" alt="Python 3.12.10"></a>
   <a href="https://scikit-learn.org/stable/"><img src="https://img.shields.io/badge/scikit--learn-1.9.1-F7931E?style=flat-square&amp;logo=scikitlearn&amp;logoColor=white" alt="scikit-learn 1.9.1"></a>
   <a href="https://pandera.readthedocs.io/en/stable/"><img src="https://img.shields.io/badge/Pandera-0.34.1-6554C0?style=flat-square" alt="Pandera 0.34.1"></a>
-  <a href="tests/"><img src="https://img.shields.io/badge/testes-120-23856D?style=flat-square" alt="120 testes verificados"></a>
+  <a href="tests/"><img src="https://img.shields.io/badge/testes-167-23856D?style=flat-square" alt="167 testes verificados"></a>
   <a href="#andamento"><img src="https://img.shields.io/badge/status-em_desenvolvimento-ED3B7D?style=flat-square" alt="Em desenvolvimento"></a>
 </p>
 
@@ -16,6 +16,7 @@
   <a href="#dados-e-contratos">Dados</a> ·
   <a href="#resultados-do-modelo">Resultados</a> ·
   <a href="#cenários-de-drift">Cenários</a> ·
+  <a href="#detecção-de-drift">Detecção</a> ·
   <a href="#andamento">Andamento</a>
 </p>
 
@@ -25,7 +26,7 @@ Um modelo de crédito pode continuar respondendo mesmo quando os dados deixam de
 
 Trabalho da **Fase 4 — Model monitoring and security**, do curso de Machine Learning Engineering da [FIAP](https://www.fiap.com.br/).
 
-A implementação atual cobre preparação dos dados, contratos com [Pandera](https://pandera.readthedocs.io/en/stable/), modelo com [scikit-learn](https://scikit-learn.org/stable/) e simulação de Data Drift. A detecção estatística, o relatório com [Evidently](https://docs.evidentlyai.com/) e o rastreamento com [MLflow](https://mlflow.org/docs/latest/) são as próximas entregas.
+A implementação atual cobre preparação dos dados, contratos com [Pandera](https://pandera.readthedocs.io/en/stable/), modelo com [scikit-learn](https://scikit-learn.org/stable/), cenários de Data Drift e detecção com PSI, KS e relatórios [Evidently](https://docs.evidentlyai.com/). As próximas entregas são Concept Drift, pipeline e rastreamento com [MLflow](https://mlflow.org/docs/latest/).
 
 ```mermaid
 flowchart LR
@@ -37,6 +38,9 @@ flowchart LR
     E --> G[Cenário alterado]
     F --> H[Predições e manifestos]
     G --> H
+    F --> I[PSI + KS + Holm]
+    G --> I
+    I --> J[Relatórios HTML e JSON]
 ```
 
 ## Executar localmente
@@ -108,13 +112,34 @@ artifacts/scenarios/
 
 `--trusted-model` é uma confirmação explícita para carregar o modelo local que acabou de ser gerado. O formato usa pickle: carregue apenas artefatos de origem conhecida. Versões e checksum são conferidos, mas um hash não comprova autoria.
 
-### 5. Rodar os testes
+### 5. Comparar as distribuições e gerar os relatórios
+
+```powershell
+.venv/Scripts/python.exe -m credit_monitor.drift_run --scenarios-dir artifacts/scenarios --output-dir artifacts/drift
+```
+
+O comando calibra a política nos dados reservados e a salva antes de consumir os cenários. Depois gera as comparações e os relatórios:
+
+```text
+artifacts/drift/
+├── policy.json          Bins, envelopes e configuração da calibração
+├── comparisons.json     PSI, KS, p-valores corrigidos e decisões
+├── evidently.json       Resultados do adaptador Evidently
+├── overview.html        Resumo com scores, limites e links
+├── control.html         Relatório Evidently do controle
+├── data_drift.html      Relatório Evidently do cenário alterado
+└── manifest.json        Integridade e origem dos artefatos
+```
+
+Abra `artifacts/drift/overview.html` no navegador. As duas comparações usam a mesma referência e a mesma política. Escolha uma pasta nova em `--output-dir` para repetir a execução.
+
+### 6. Rodar os testes
 
 ```powershell
 .venv/Scripts/python.exe -m pytest -q
 ```
 
-**120 testes verificados.** As [fixtures são sintéticas](tests/) e os testes não precisam de rede nem da base completa. Cobrem contratos, bloqueio de lotes, partições, treino, métricas, persistência, cenários e reprodução dos arquivos. O badge indica a última verificação local; ainda não há execução de CI configurada.
+**167 testes verificados.** As [fixtures são sintéticas](tests/) e os testes não precisam de rede nem da base completa. Cobrem contratos, bloqueio de lotes, partições, treino, métricas, persistência, cenários, PSI, KS, política de alerta, integração Evidently e reprodução dos resultados. O badge indica a última verificação local; ainda não há execução de CI configurada. A suíte também registra avisos internos de depreciação e de correlação em colunas constantes das dependências, sem falhas nos testes.
 
 ## Dados e contratos
 
@@ -169,9 +194,32 @@ Na execução de 26/10/2026, o limite mudou em **6.000 registros**, e o pagament
 
 Com o mesmo modelo e limiar, o controle teve **1.235 predições positivas**, e o cenário alterado teve **1.198**. Ao todo, **53 decisões mudaram**; a diferença líquida de positivas foi 37. Essa resposta do modelo não é uma medida de acurácia nem prova de causalidade econômica: os rótulos históricos não descrevem o que aconteceria depois da intervenção.
 
-Há 56 registros de produção com perfis das 20 features já vistos na referência. Eles permanecem no cenário, e essa limitação é registrada no manifesto. A detecção estatística das mudanças será acrescentada na próxima etapa.
+Há 56 registros de produção com perfis das 20 features já vistos na referência. Eles permanecem no cenário, e essa limitação é registrada no manifesto.
 
 O [comando de cenários](src/credit_monitor/scenario_run.py) registra as intensidades, os hashes e as predições. Duas execuções locais produziram os cinco arquivos idênticos byte a byte.
+
+## Detecção de drift
+
+O [módulo estatístico](src/credit_monitor/drift.py) compara as 20 features do modelo com a referência de treino. ID, alvo e atributos cadastrais excluídos do modelo ficam fora dos testes.
+
+O PSI usa até dez bins quantílicos definidos pela referência, com bordas que cobrem os extremos e pseudocontagem de 0,5 por bin. Isso permite tratar bins sem ocorrências sem descartar valores. O KS informa a distância **D**, entre 0 e 1, e um p-valor bilateral assintótico. Como a base tem valores repetidos, esse p-valor é uma aproximação sob o modelo contínuo; não deve ser interpretado como probabilidade de uma hipótese ser verdadeira.
+
+Os limites de PSI e D são definidos separadamente por feature, com **200 reamostragens da calibração**, seed **42** e percentil **99**. Um alerta exige PSI e D acima dos respectivos limites e p-valor corrigido por **Holm** de até 0,05. A correção cobre as 20 features de cada comparação; monitoramento repetido no tempo exigirá tratamento adicional. Esses envelopes são critérios empíricos de operação, sem garantia de taxa global de falso alerta.
+
+Não usamos 0,1 ou 0,25 como regras universais de PSI. Amostras com menos de 200 linhas, tamanhos de lote diferentes do usado na calibração e referências constantes têm estados explícitos. Uma mudança no suporte de uma referência constante é sinalizada separadamente. Política com bins ou configuração incompatíveis é rejeitada.
+
+Na execução de **29/10/2026**:
+
+- **Controle:** nenhum alerta nas 20 features.
+- **LIMIT_BAL alterado:** PSI **0,382789**, acima do limite **0,006938**; KS D **0,212167**, acima de **0,028279**.
+- **PAY_AMT1 alterado:** PSI **0,458898**, acima do limite **0,008578**; KS D **0,256611**, acima de **0,026194**.
+- As duas features também passaram pelo critério de p-valor corrigido. As outras 18 não geraram alertas.
+
+O [adaptador Evidently](src/credit_monitor/drift_report.py) usa essas mesmas decisões. O score exibido no HTML nativo é **KS D**; o resumo mostra também PSI, limites e p-valores corrigidos. No cabeçalho do Evidently, o limite global de 0,05 significa **5% das features** — uma entre 20 — e não o nível de significância do teste.
+
+O [executor](src/credit_monitor/drift_run.py) verifica os hashes de entrada, grava e relê a política antes de comparar a produção e escreve o manifesto final apenas após concluir os relatórios. A política e os resultados numéricos são reproduzíveis. Os HTMLs nativos podem variar em identificadores e timestamps internos do Evidently, mesmo com scores iguais.
+
+Ausência de alerta não comprova estabilidade. Data Drift também não demonstra Concept Drift nem perda de acurácia; essa investigação terá um cenário próprio na próxima etapa.
 
 ## Organização do repositório
 
@@ -185,7 +233,10 @@ tech-challenge-fase-four/
 │   ├── model_store.py         Persistência e integridade
 │   ├── experiment.py          Execução do modelo inicial
 │   ├── scenarios.py           Controle e transformações
-│   └── scenario_run.py        Execução dos cenários
+│   ├── scenario_run.py        Execução dos cenários
+│   ├── drift.py               PSI, KS, calibração e decisões
+│   ├── drift_report.py        Evidently e resumo HTML
+│   └── drift_run.py           Execução da comparação de distribuições
 ├── tests/                    Testes com dados sintéticos
 ├── pyproject.toml
 └── requirements.lock.txt
@@ -199,7 +250,7 @@ tech-challenge-fase-four/
 - [x] Partições reproduzíveis e contratos de dados.
 - [x] Modelo inicial, comparação, limiar e persistência.
 - [x] Controle, Data Drift simulado e predições congeladas.
-- [ ] PSI, KS e relatório HTML com Evidently.
+- [x] PSI, KS e relatório HTML com Evidently.
 - [ ] Cenário separado de Concept Drift.
 - [ ] Pipeline com logs, métricas, alertas e MLflow.
 - [ ] Análise de vieses, governança e reprodução completa.
@@ -219,7 +270,7 @@ A exclusão de atributos cadastrais do treino não elimina possíveis vieses. A 
 - **Preparação e análise:** [pandas](https://pandas.pydata.org/docs/) e [NumPy](https://numpy.org/doc/stable/).
 - **Validação:** [Pandera](https://pandera.readthedocs.io/en/stable/).
 - **Modelo e avaliação:** [scikit-learn](https://scikit-learn.org/stable/), [métricas](https://scikit-learn.org/stable/modules/model_evaluation.html) e [persistência de modelos](https://scikit-learn.org/stable/model_persistence.html).
-- **Próximas integrações:** [Evidently](https://docs.evidentlyai.com/) e [MLflow](https://mlflow.org/docs/latest/).
+- **Relatórios:** [Evidently](https://docs.evidentlyai.com/). Próxima integração: [MLflow](https://mlflow.org/docs/latest/).
 - **Ambiente e testes:** [uv](https://docs.astral.sh/uv/) e [pytest](https://docs.pytest.org/en/stable/).
 
 ---
