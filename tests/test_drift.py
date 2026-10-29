@@ -2,11 +2,15 @@ import numpy as np
 import pytest
 import pandas as pd
 import json
+import hashlib
+from pathlib import Path
 
 from credit_monitor.drift import calibrate_policy, compare_drift, holm_adjust, ks_comparison, population_stability_index
 from credit_monitor.contracts import InvalidBatch
 from credit_monitor.baseline import FEATURES
 from credit_monitor.drift_report import export_evidently
+from credit_monitor.scenarios import build_scenarios
+from credit_monitor.drift_run import run_drift
 
 
 def test_psi_is_zero_for_identical_samples():
@@ -219,3 +223,86 @@ def test_evidently_reports_control_and_refuses_unavailable_or_existing_output(re
     with pytest.raises(ValueError, match="indisponivel"):
         export_evidently(reference, calibration.iloc[:10], policy, tmp_path / "small.html")
     assert not (tmp_path / "small.html").exists()
+
+
+@pytest.fixture
+def inputs(reference, calibration, tmp_path):
+    data, scenarios = tmp_path / "data", tmp_path / "scenarios"
+    data.mkdir(); scenarios.mkdir()
+    production = calibration.copy()
+    production["ID"] += 10000
+    manifest = {"partitions": {}}
+    for name, frame in [("reference", reference), ("calibration", calibration), ("production", production)]:
+        path = data / f"{name}.csv"
+        frame.to_csv(path, index=False)
+        manifest["partitions"][name] = {"file": path.name, "rows": len(frame),
+                                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+    payload = json.dumps(manifest).encode()
+    (data / "manifest.json").write_bytes(payload)
+    origin = {"stage": "S04", "data_manifest_sha256": hashlib.sha256(payload).hexdigest(), "files": {}}
+    for name, frame in build_scenarios(production).items():
+        frame.to_csv(scenarios / f"{name}.csv", index=False)
+        pd.DataFrame({"ID": frame.ID, "probability_default": 0.2, "prediction": 0}).to_csv(
+            scenarios / f"{name}_predictions.csv", index=False)
+    for path in scenarios.glob('*.csv'):
+        origin["files"][path.name] = {"rows": len(production), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+    (scenarios / "manifest.json").write_text(json.dumps(origin))
+    return data, scenarios
+
+
+def test_drift_execution_reproduces_numeric_outputs_and_preserves_inputs(inputs, tmp_path):
+    data, scenarios = inputs
+    before = {path: path.read_bytes() for folder in inputs for path in folder.iterdir()}
+    a, b = tmp_path / "run1", tmp_path / "run2"
+    run_drift(data, scenarios, a, n_resamples=20)
+    run_drift(data, scenarios, b, n_resamples=20)
+    for name in ["policy.json", "comparisons.json"]:
+        assert (a / name).read_bytes() == (b / name).read_bytes()
+    metrics = json.loads((a / "comparisons.json").read_text())
+    assert metrics["control"]["alerted_features"] == []
+    assert set(metrics["data_drift"]["alerted_features"]) == {"LIMIT_BAL", "PAY_AMT1"}
+    manifest = json.loads((a / "manifest.json").read_text())
+    for name, info in manifest["files"].items():
+        assert hashlib.sha256((a / name).read_bytes()).hexdigest() == info["sha256"]
+    assert (a / "control.html").stat().st_size > 1000
+    assert (a / "data_drift.html").stat().st_size > 1000
+    assert (a / "overview.html").exists()
+    for path, content in before.items():
+        assert path.read_bytes() == content
+
+
+@pytest.mark.parametrize("part", ["calibration", "control", "lineage"])
+def test_drift_execution_rejects_tampered_inputs_before_success(inputs, tmp_path, part):
+    data, scenarios = inputs
+    path = data / "calibration.csv" if part == "calibration" else scenarios / ("control.csv" if part == "control" else "manifest.json")
+    if part == "lineage":
+        origin = json.loads(path.read_text())
+        origin["data_manifest_sha256"] = "foreign data manifest"
+        path.write_text(json.dumps(origin))
+    else:
+        with path.open("ab") as stream:
+            stream.write(b" ")
+    with pytest.raises(ValueError):
+        run_drift(data, scenarios, tmp_path / "run", n_resamples=20)
+    assert not (tmp_path / "run/manifest.json").exists()
+
+
+def test_drift_execution_does_not_overwrite_existing_run(inputs, tmp_path):
+    output = tmp_path / "run"
+    output.mkdir()
+    (output / "manifest.json").write_text("keep")
+    with pytest.raises(FileExistsError):
+        run_drift(*inputs, output, n_resamples=20)
+    assert (output / "manifest.json").read_text() == "keep"
+
+
+def test_report_failure_does_not_leave_success_manifest(inputs, tmp_path, monkeypatch):
+    from credit_monitor import drift_run
+
+    def fail(*args, **kwargs):
+        raise OSError("synthetic report failure")
+
+    monkeypatch.setattr(drift_run, "export_evidently", fail, raising=False)
+    with pytest.raises(OSError):
+        run_drift(*inputs, tmp_path / "run", n_resamples=20)
+    assert not (tmp_path / "run/manifest.json").exists()
