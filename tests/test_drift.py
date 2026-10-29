@@ -1,7 +1,10 @@
 import numpy as np
 import pytest
+import pandas as pd
+import json
 
-from credit_monitor.drift import holm_adjust, ks_comparison, population_stability_index
+from credit_monitor.drift import calibrate_policy, compare_drift, holm_adjust, ks_comparison, population_stability_index
+from credit_monitor.contracts import InvalidBatch
 
 
 def test_psi_is_zero_for_identical_samples():
@@ -89,3 +92,90 @@ def test_holm_adjustment_matches_hand_calculation_and_preserves_names():
 def test_holm_rejects_invalid_pvalues(p):
     with pytest.raises(ValueError):
         holm_adjust({"feature": p})
+
+
+@pytest.fixture
+def reference():
+    n = 400
+    values = {"ID": np.arange(n), "LIMIT_BAL": np.arange(1, n+1)*1000, "SEX": np.ones(n),
+              "EDUCATION": np.ones(n), "MARRIAGE": np.ones(n), "AGE": np.full(n, 40)}
+    for col in ("PAY_0", "PAY_2", "PAY_3", "PAY_4", "PAY_5", "PAY_6"):
+        values[col] = np.zeros(n)
+    for i in range(1, 7):
+        values[f"BILL_AMT{i}"] = np.arange(n)*10
+        values[f"PAY_AMT{i}"] = np.arange(1,n+1)*100
+    return pd.DataFrame(values, dtype="int64")
+
+
+@pytest.fixture
+def calibration(reference):
+    result = reference.copy()
+    result["ID"] += 10000
+    return result
+
+
+def test_policy_is_json_safe_repeatable_and_uses_reference_bins(reference, calibration):
+    first = calibrate_policy(reference, calibration, n_resamples=20)
+    second = calibrate_policy(reference, calibration, n_resamples=20)
+    assert json.loads(json.dumps(first, allow_nan=False)) == first == second
+    assert first["features"]["LIMIT_BAL"]["cutpoints"] == population_stability_index(
+        reference.LIMIT_BAL, calibration.LIMIT_BAL)["cutpoints"]
+    assert first["calibration_rows"] == 400
+    assert first["n_resamples"] == 20
+    assert first["features"]["LIMIT_BAL"]["psi_threshold"] > 0
+
+
+def test_comparison_reports_identical_control_and_two_known_changes(reference, calibration):
+    policy = calibrate_policy(reference, calibration, n_resamples=20)
+    control = compare_drift(reference, calibration, policy)
+    assert control["alerted_features"] == []
+    changed = calibration.copy()
+    changed["LIMIT_BAL"] *= 3
+    changed["PAY_AMT1"] //= 2
+    result = compare_drift(reference, changed, policy)
+    assert set(result["alerted_features"]) == {"LIMIT_BAL", "PAY_AMT1"}
+    assert result["drift_detected"] is True
+    assert result["features"]["LIMIT_BAL"]["ks_pvalue_holm"] <= 0.05
+
+
+def test_constant_reference_change_is_not_reported_as_no_drift(reference, calibration):
+    policy = calibrate_policy(reference, calibration, n_resamples=20)
+    calibration["AGE"] = 41
+    result = compare_drift(reference, calibration, policy)
+    feature = result["features"]["AGE"]
+    assert feature["status"] == "constant_reference_changed"
+    assert feature["alert"] is True and feature["psi"] is None
+
+
+def test_comparison_rejects_modified_reference_and_invalid_lot(reference, calibration):
+    policy = calibrate_policy(reference, calibration, n_resamples=20)
+    changed_reference = reference.copy()
+    changed_reference.loc[0, "LIMIT_BAL"] = 999
+    with pytest.raises(ValueError, match="referencia"):
+        compare_drift(changed_reference, calibration, policy)
+    calibration["LIMIT_BAL"] = calibration.LIMIT_BAL.astype("Int64")
+    calibration.loc[0, "LIMIT_BAL"] = pd.NA
+    with pytest.raises(InvalidBatch):
+        compare_drift(reference, calibration, policy)
+
+
+def test_small_or_different_size_lot_is_unavailable_not_false_success(reference, calibration):
+    policy = calibrate_policy(reference, calibration, n_resamples=20)
+    small = compare_drift(reference, calibration.iloc[:10], policy)
+    assert small["status"] == "insufficient_samples" and small["drift_detected"] is None
+    other_size = compare_drift(reference, calibration.iloc[:300], policy)
+    assert other_size["status"] == "uncalibrated_sample_size"
+    assert other_size["drift_detected"] is None
+
+
+@pytest.mark.parametrize("kwargs", [{"n_resamples": 0}, {"quantile": 1}, {"alpha": 0}])
+def test_policy_rejects_invalid_configuration(reference, calibration, kwargs):
+    with pytest.raises(ValueError):
+        calibrate_policy(reference, calibration, **kwargs)
+
+
+def test_policy_rejects_overlapping_ids_and_too_small_calibration(reference, calibration):
+    with pytest.raises(ValueError, match="IDs"):
+        calibrate_policy(reference, reference, n_resamples=20)
+    with pytest.raises(ValueError):
+        calibrate_policy(reference, calibration.iloc[:10], n_resamples=20)
