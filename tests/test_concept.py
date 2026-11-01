@@ -1,12 +1,17 @@
 import numpy as np
 import pandas as pd
 import pytest
+import hashlib
+import json
+from pathlib import Path
 
 from credit_monitor.contracts import InvalidBatch
 from credit_monitor.data import TARGET
 from credit_monitor.scenarios import build_concept_scenario
 from credit_monitor.concept import evaluate_concept, predict_concept
 from credit_monitor.baseline import predict_scores, train_models
+from credit_monitor.model_store import save_models
+from credit_monitor.concept_run import run_concept
 
 
 @pytest.fixture
@@ -202,3 +207,112 @@ def test_frozen_prediction_supports_unlabeled_pair(production):
     predictions, result = predict_concept(model, .27, frame, frame.copy())
     assert len(predictions) == len(frame)
     assert result['status'] == 'unavailable_without_labels'
+
+
+@pytest.fixture
+def inputs(production, tmp_path):
+    data, model = tmp_path / 'data', tmp_path / 'model'
+    data.mkdir()
+    source = {'partitions': {}}
+    for offset, name in enumerate(('reference', 'calibration', 'production')):
+        frame = production.copy()
+        frame['ID'] += offset * 100
+        path = data / f'{name}.csv'
+        frame.to_csv(path, index=False, lineterminator='\n')
+        source['partitions'][name] = {'file': path.name, 'rows': len(frame),
+                                     'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+    payload = json.dumps(source).encode()
+    (data / 'manifest.json').write_bytes(payload)
+    save_models(train_models(production), model, thresholds={'model': .27, 'dummy': .5},
+                metadata={'data_manifest_sha256': hashlib.sha256(payload).hexdigest()})
+    return data, model
+
+
+def test_concept_execution_reproduces_all_artifacts_without_changing_sources(inputs, tmp_path):
+    data, model = inputs
+    before = {p: p.read_bytes() for folder in inputs for p in folder.iterdir()}
+    first, second = tmp_path / 'run1', tmp_path / 'run2'
+    result = run_concept(data, model, first, trusted_model=True)
+    run_concept(data, model, second, trusted_model=True)
+    assert result['stage'] == 'S06'
+    assert result['threshold'] == .27
+    assert result['changed_labels'] == {'total': 8, 'zero_to_one': 4, 'one_to_zero': 4}
+    assert {p.name for p in first.iterdir()} == {
+        'control.csv', 'concept_drift.csv', 'predictions.csv', 'label_changes.csv',
+        'report.json', 'manifest.json'}
+    for path in first.iterdir():
+        assert path.read_bytes() == (second / path.name).read_bytes()
+    for name, info in result['files'].items():
+        assert hashlib.sha256((first / name).read_bytes()).hexdigest() == info['sha256']
+    for path, content in before.items():
+        assert path.read_bytes() == content
+    changes = pd.read_csv(first / 'label_changes.csv')
+    assert len(changes) == 8
+    assert changes.columns.tolist() == ['ID', 'PAY_0', 'original_label', 'synthetic_label']
+    report = json.loads((first / 'report.json').read_text())
+    assert report['x_identical'] and report['shared_predictions']
+    assert report['label_marginal_unchanged']
+    assert 'ID' not in (first / 'report.json').read_text()
+
+
+@pytest.mark.parametrize('case', ['production', 'reference', 'calibration', 'lineage', 'model'])
+def test_concept_execution_rejects_corruption_before_success(inputs, tmp_path, case):
+    data, model = inputs
+    if case == 'lineage':
+        path = model / 'manifest.json'
+        value = json.loads(path.read_text())
+        value['metadata']['data_manifest_sha256'] = 'another source'
+        path.write_text(json.dumps(value))
+    else:
+        path = model / 'models.pkl' if case == 'model' else data / f'{case}.csv'
+        path.write_bytes(path.read_bytes() + b' ')
+    with pytest.raises(ValueError):
+        run_concept(data, model, tmp_path / 'run', trusted_model=True)
+    assert not (tmp_path / 'run/manifest.json').exists()
+
+
+def test_concept_execution_rejects_overlapping_partition_ids(inputs, tmp_path):
+    data, model = inputs
+    path = data / 'production.csv'
+    frame = pd.read_csv(path)
+    frame.loc[0, 'ID'] = 1001
+    frame.to_csv(path, index=False)
+    value = json.loads((data / 'manifest.json').read_text())
+    value['partitions']['production']['sha256'] = hashlib.sha256(path.read_bytes()).hexdigest()
+    payload = json.dumps(value).encode()
+    (data / 'manifest.json').write_bytes(payload)
+    value = json.loads((model / 'manifest.json').read_text())
+    value['metadata']['data_manifest_sha256'] = hashlib.sha256(payload).hexdigest()
+    (model / 'manifest.json').write_text(json.dumps(value))
+    with pytest.raises(ValueError, match='disjuntos'):
+        run_concept(data, model, tmp_path / 'run', trusted_model=True)
+
+
+def test_concept_execution_requires_trusted_local_model(inputs, tmp_path):
+    with pytest.raises(ValueError, match='trusted'):
+        run_concept(*inputs, tmp_path / 'run')
+    assert not (tmp_path / 'run').exists()
+
+
+def test_concept_execution_refuses_existing_directory(inputs, tmp_path):
+    output = tmp_path / 'run'
+    output.mkdir()
+    marker = output / 'manifest.json'
+    marker.write_text('keep')
+    with pytest.raises(FileExistsError):
+        run_concept(*inputs, output, trusted_model=True)
+    assert marker.read_text() == 'keep'
+
+
+def test_failed_concept_export_never_leaves_success_manifest(inputs, tmp_path, monkeypatch):
+    original = Path.write_bytes
+
+    def fail(path, payload):
+        if path.name == 'predictions.csv':
+            raise OSError('synthetic write failure')
+        return original(path, payload)
+
+    monkeypatch.setattr(Path, 'write_bytes', fail)
+    with pytest.raises(OSError):
+        run_concept(*inputs, tmp_path / 'run', trusted_model=True)
+    assert not (tmp_path / 'run/manifest.json').exists()
