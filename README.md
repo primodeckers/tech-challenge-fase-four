@@ -6,7 +6,7 @@
   <a href="https://www.python.org/downloads/release/python-31210/"><img src="https://img.shields.io/badge/Python-3.12.10-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white" alt="Python 3.12.10"></a>
   <a href="https://scikit-learn.org/stable/"><img src="https://img.shields.io/badge/scikit--learn-1.9.1-F7931E?style=flat-square&amp;logo=scikitlearn&amp;logoColor=white" alt="scikit-learn 1.9.1"></a>
   <a href="https://pandera.readthedocs.io/en/stable/"><img src="https://img.shields.io/badge/Pandera-0.34.1-6554C0?style=flat-square" alt="Pandera 0.34.1"></a>
-  <a href="tests/"><img src="https://img.shields.io/badge/testes-167-23856D?style=flat-square" alt="167 testes verificados"></a>
+  <a href="tests/"><img src="https://img.shields.io/badge/testes-216-23856D?style=flat-square" alt="216 testes verificados"></a>
   <a href="#andamento"><img src="https://img.shields.io/badge/status-em_desenvolvimento-ED3B7D?style=flat-square" alt="Em desenvolvimento"></a>
 </p>
 
@@ -17,6 +17,7 @@
   <a href="#resultados-do-modelo">Resultados</a> ·
   <a href="#cenários-de-drift">Cenários</a> ·
   <a href="#detecção-de-drift">Detecção</a> ·
+  <a href="#concept-drift">Conceito</a> ·
   <a href="#andamento">Andamento</a>
 </p>
 
@@ -26,7 +27,7 @@ Um modelo de crédito pode continuar respondendo mesmo quando os dados deixam de
 
 Trabalho da **Fase 4 — Model monitoring and security**, do curso de Machine Learning Engineering da [FIAP](https://www.fiap.com.br/).
 
-A implementação atual cobre preparação dos dados, contratos com [Pandera](https://pandera.readthedocs.io/en/stable/), modelo com [scikit-learn](https://scikit-learn.org/stable/), cenários de Data Drift e detecção com PSI, KS e relatórios [Evidently](https://docs.evidentlyai.com/). As próximas entregas são Concept Drift, pipeline e rastreamento com [MLflow](https://mlflow.org/docs/latest/).
+A implementação atual cobre preparação dos dados, contratos com [Pandera](https://pandera.readthedocs.io/en/stable/), modelo com [scikit-learn](https://scikit-learn.org/stable/), cenários de Data Drift e detecção com PSI, KS e relatórios [Evidently](https://docs.evidentlyai.com/). Também inclui uma simulação separada de Concept Drift, com entradas fixas e avaliação por segmento. As próximas entregas são pipeline e rastreamento com [MLflow](https://mlflow.org/docs/latest/).
 
 ```mermaid
 flowchart LR
@@ -133,13 +134,33 @@ artifacts/drift/
 
 Abra `artifacts/drift/overview.html` no navegador. As duas comparações usam a mesma referência e a mesma política. Escolha uma pasta nova em `--output-dir` para repetir a execução.
 
-### 6. Rodar os testes
+### 6. Simular uma mudança na relação com o alvo
+
+```powershell
+.venv/Scripts/python.exe -m credit_monitor.concept_run --model-dir artifacts/baseline --output-dir artifacts/concept --trusted-model
+```
+
+Esse cenário parte da produção original, separado das alterações de features do passo 4. Mantém X, modelo e limiar; modifica apenas parte dos rótulos por uma regra fixa descrita em [Concept Drift](#concept-drift).
+
+```text
+artifacts/concept/
+├── control.csv           Produção original
+├── concept_drift.csv     Mesmas entradas, parte dos rótulos alterada
+├── predictions.csv       Um vetor de predições compartilhado pelo par
+├── label_changes.csv     Registro local dos rótulos alterados
+├── report.json           Métricas globais e por segmento, antes/depois
+└── manifest.json         Regra, seed, integridade e origem
+```
+
+Os CSVs individuais permanecem locais. O relatório registra contagens e métricas agregadas. Para repetir, use outro destino; nenhuma execução existente é sobrescrita.
+
+### 7. Rodar os testes
 
 ```powershell
 .venv/Scripts/python.exe -m pytest -q
 ```
 
-**167 testes verificados.** As [fixtures são sintéticas](tests/) e os testes não precisam de rede nem da base completa. Cobrem contratos, bloqueio de lotes, partições, treino, métricas, persistência, cenários, PSI, KS, política de alerta, integração Evidently e reprodução dos resultados. O badge indica a última verificação local; ainda não há execução de CI configurada. A suíte também registra avisos internos de depreciação e de correlação em colunas constantes das dependências, sem falhas nos testes.
+**216 testes verificados.** As [fixtures são sintéticas](tests/) e os testes não precisam de rede nem da base completa. Cobrem contratos, bloqueio de lotes, partições, treino, métricas, persistência, cenários, PSI, KS, política de alerta, integração Evidently, Concept Drift e reprodução dos resultados. O badge indica a última verificação local; ainda não há execução de CI configurada. A suíte também registra avisos internos de depreciação e de correlação em colunas constantes das dependências, sem falhas nos testes.
 
 ## Dados e contratos
 
@@ -219,7 +240,34 @@ O [adaptador Evidently](src/credit_monitor/drift_report.py) usa essas mesmas dec
 
 O [executor](src/credit_monitor/drift_run.py) verifica os hashes de entrada, grava e relê a política antes de comparar a produção e escreve o manifesto final apenas após concluir os relatórios. A política e os resultados numéricos são reproduzíveis. Os HTMLs nativos podem variar em identificadores e timestamps internos do Evidently, mesmo com scores iguais.
 
-Ausência de alerta não comprova estabilidade. Data Drift também não demonstra Concept Drift nem perda de acurácia; essa investigação terá um cenário próprio na próxima etapa.
+Ausência de alerta não comprova estabilidade. Data Drift também não demonstra Concept Drift nem perda de acurácia; a investigação abaixo usa uma intervenção própria no alvo.
+
+## Concept Drift
+
+O [cenário de conceito](src/credit_monitor/scenarios.py) mantém todas as entradas, IDs e ordem. A regra foi registrada antes da avaliação, sem consultar erros ou probabilidades do modelo:
+
+- Candidatos a **0 → 1:** registros com `PAY_0 <= 0` e alvo original 0.
+- Candidatos a **1 → 0:** registros com `PAY_0 > 0` e alvo original 1.
+- Em cada direção, sortear `floor(menor quantidade de candidatos / 4)` registros, sem reposição, com **PCG64 e seed 42**. Os candidatos são ordenados por ID antes do sorteio.
+
+As trocas balanceadas preservam exatamente a proporção global das classes. A relação entre o grupo de pagamento e o alvo muda por construção; uma simples alteração da prevalência global não explica essa comparação. A regra é um exercício acadêmico, sem pretensão de descrever o comportamento real de clientes.
+
+Na execução de **01/11/2026**, com os mesmos 6 mil registros e limiar **0,27**:
+
+- **348 rótulos alterados:** 174 em cada direção.
+- **ROC-AUC:** 0,7234 no controle → 0,6303 no cenário.
+- **F1:** 0,5207 → 0,3989.
+- **Recall:** 0,5026 → 0,3851.
+- **Brier:** 0,1441 → 0,1649; o aumento indica piora.
+- **Prevalência:** 22,1167% nos dois casos. As probabilidades e as 1.235 predições positivas também permanecem iguais.
+
+A [avaliação por segmento](src/credit_monitor/concept.py) informa contagens, matrizes de confusão, falsos positivos/negativos e seus denominadores. No grupo `PAY_0 <= 0`, com **4.638 registros**, a prevalência passou de 13,6050% para 17,3566%, e a taxa de falsos negativos de 93,9778% para 95,0311%. No grupo `PAY_0 > 0`, com **1.362 registros**, a prevalência caiu de 51,1013% para 38,3260%, e a taxa de falsos positivos subiu de 74,0240% para 77,5000%.
+
+Nem toda métrica piorou em todos os grupos: a average precision no grupo `PAY_0 <= 0` subiu de 0,1807 para 0,2068, enquanto seu F1 caiu de 0,1022 para 0,0871. O relatório preserva esses resultados; a prevalência dentro do grupo também mudou, o que afeta a leitura de precisão, recall e average precision.
+
+> Esta é uma intervenção conhecida em Y com X fixo, não comprovação de Concept Drift em uma operação real. Os números são descritivos do cenário pareado; há 56 perfis de produção também presentes na referência. Não houve seleção de uma nova regra após olhar os resultados, retreino, novo limiar ou teste independente de generalização.
+
+Com X idêntico, uma comparação baseada apenas nas features não distingue os dois cenários. **Sem rótulos, a avaliação de desempenho devolve `unavailable_without_labels`**, sem inventar métricas nem concluir estabilidade. Grupos vazios e taxas sem denominador também ficam indisponíveis. O [executor S06](src/credit_monitor/concept_run.py) exige rótulos para gerar a intervenção, verifica as três partições e o modelo e salva o manifesto por último. Duas execuções produziram os seis arquivos idênticos byte a byte.
 
 ## Organização do repositório
 
@@ -236,7 +284,9 @@ tech-challenge-fase-four/
 │   ├── scenario_run.py        Execução dos cenários
 │   ├── drift.py               PSI, KS, calibração e decisões
 │   ├── drift_report.py        Evidently e resumo HTML
-│   └── drift_run.py           Execução da comparação de distribuições
+│   ├── drift_run.py           Execução da comparação de distribuições
+│   ├── concept.py             Avaliação pareada e erros por segmento
+│   └── concept_run.py         Execução do cenário de conceito
 ├── tests/                    Testes com dados sintéticos
 ├── pyproject.toml
 └── requirements.lock.txt
@@ -251,7 +301,7 @@ tech-challenge-fase-four/
 - [x] Modelo inicial, comparação, limiar e persistência.
 - [x] Controle, Data Drift simulado e predições congeladas.
 - [x] PSI, KS e relatório HTML com Evidently.
-- [ ] Cenário separado de Concept Drift.
+- [x] Cenário separado de Concept Drift e análise por segmento.
 - [ ] Pipeline com logs, métricas, alertas e MLflow.
 - [ ] Análise de vieses, governança e reprodução completa.
 - [ ] Vídeo de demonstração e revisão final da entrega.
