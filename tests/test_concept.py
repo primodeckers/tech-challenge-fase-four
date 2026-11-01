@@ -5,6 +5,7 @@ import pytest
 from credit_monitor.contracts import InvalidBatch
 from credit_monitor.data import TARGET
 from credit_monitor.scenarios import build_concept_scenario
+from credit_monitor.concept import evaluate_concept
 
 
 @pytest.fixture
@@ -72,3 +73,74 @@ def test_concept_validates_input_contract(production):
     production.loc[0, 'AGE'] = 18
     with pytest.raises(InvalidBatch):
         build_concept_scenario(production)
+
+
+def test_evaluation_has_hand_calculated_global_and_conditional_errors(production):
+    # Controle perfeito; 4 trocas em cada grupo com scores fixos.
+    scores = np.repeat([0.1, 0.9], 16)
+    result = evaluate_concept(production, build_concept_scenario(production), scores, 0.5)
+    assert result['status'] == 'available'
+    a, b = result['control'], result['concept_drift']
+    assert a['confusion_matrix'] == [[16, 0], [0, 16]]
+    assert b['confusion_matrix'] == [[12, 4], [4, 12]]
+    assert b['roc_auc'] == pytest.approx(0.75)
+    assert b['f1'] == pytest.approx(0.75)
+    assert b['brier'] == pytest.approx(0.21)
+    assert result['delta']['prevalence'] == 0
+    assert result['delta']['brier'] == pytest.approx(0.20)
+    assert result['changed_labels'] == {'total': 8, 'zero_to_one': 4, 'one_to_zero': 4}
+    assert result['label_marginal_unchanged'] is True
+    low, high = result['segments']['pay_0_le_0'], result['segments']['pay_0_gt_0']
+    assert low['rows'] == high['rows'] == 16
+    assert low['control']['false_negative_rate'] is None  # sem positivos reais
+    assert low['concept_drift']['false_negative_rate'] == 1
+    assert low['concept_drift']['actual_positives'] == 4
+    assert high['concept_drift']['false_positive_rate'] == 1
+    assert high['concept_drift']['actual_negatives'] == 4
+    assert low['delta']['prevalence'] == 0.25
+    assert high['delta']['prevalence'] == -0.25
+
+
+def test_unlabeled_evaluation_is_explicitly_unavailable(production):
+    frame = production.drop(columns=TARGET)
+    result = evaluate_concept(frame, frame.copy(), np.full(len(frame), 0.2), 0.27)
+    assert result['status'] == 'unavailable_without_labels'
+    assert result['control'] is result['concept_drift'] is result['delta'] is None
+    assert result['segments'] == {}
+    assert result['changed_labels'] is None
+
+
+@pytest.mark.parametrize('case', ['feature', 'id_order', 'audit', 'mixed_labels', 'invalid_contract'])
+def test_evaluation_rejects_unpaired_or_invalid_inputs(production, case):
+    changed = build_concept_scenario(production)
+    if case == 'feature':
+        changed.loc[0, 'LIMIT_BAL'] += 1000
+    elif case == 'id_order':
+        changed = changed.iloc[::-1]
+    elif case == 'audit':
+        changed.loc[0, 'SEX'] = 2
+    elif case == 'mixed_labels':
+        changed = changed.drop(columns=TARGET)
+    else:
+        changed.loc[0, 'AGE'] = 18
+    with pytest.raises((ValueError, InvalidBatch)):
+        evaluate_concept(production, changed, np.full(len(production), .2), .27)
+
+
+@pytest.mark.parametrize('scores', [[], [0.1], [float('nan')]*32, [-.1]*32, [1.1]*32, [[.2]]*32])
+def test_evaluation_rejects_invalid_shared_probabilities(production, scores):
+    with pytest.raises(ValueError):
+        evaluate_concept(production, build_concept_scenario(production), scores, .27)
+
+
+@pytest.mark.parametrize('threshold', [-.1, 1.1, float('nan'), float('inf')])
+def test_evaluation_rejects_invalid_threshold(production, threshold):
+    with pytest.raises(ValueError):
+        evaluate_concept(production, production.copy(), np.full(32, .2), threshold)
+
+
+def test_empty_segment_does_not_invent_metrics(production):
+    frame = production.iloc[:16]
+    result = evaluate_concept(frame, frame.copy(), np.full(16, .2), .27)
+    assert result['segments']['pay_0_gt_0'] == {'status': 'empty_segment', 'rows': 0,
+                                             'control': None, 'concept_drift': None, 'delta': None}
