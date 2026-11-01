@@ -1,8 +1,9 @@
 """Avaliacao pareada de uma intervencao sintetica no alvo, com X fixo."""
 
 import numpy as np
+import pandas as pd
 
-from credit_monitor.baseline import evaluate_binary
+from credit_monitor.baseline import evaluate_binary, predict_scores
 from credit_monitor.data import TARGET
 from credit_monitor.scenarios import copy_control
 
@@ -28,13 +29,7 @@ def _delta(first, second):
             for name in names}
 
 
-def evaluate_concept(control, concept, scores, threshold):
-    """Compara dois alvos no mesmo X, com um unico vetor de probabilidades.
-
-    Nao treina, prediz ou escolhe limiar. Erros por PAY_0 trazem denominadores;
-    grupos vazios/classes ausentes e ausencia de rotulos sao explicitos.
-    Resultado descritivo da intervencao, sem teste de drift real ou causalidade.
-    """
+def _validated_pair(control, concept, threshold):
     control, concept = copy_control(control), copy_control(concept)
     labeled = TARGET in control
     if labeled != (TARGET in concept):
@@ -42,12 +37,35 @@ def evaluate_concept(control, concept, scores, threshold):
     columns = [name for name in control if name != TARGET]
     if not control[columns].reset_index(drop=True).equals(concept[columns].reset_index(drop=True)):
         raise ValueError('Comparacao de conceito requer X, IDs e ordem identicos')
+    if not np.isfinite(threshold) or not 0 <= threshold <= 1:
+        raise ValueError('Limiar precisa ser finito entre0 e1')
+    return control, concept
+
+
+def predict_concept(model, threshold, control, concept):
+    """Valida o par antes da inferencia; um vetor serve aos dois cenarios."""
+    control, concept = _validated_pair(control, concept, threshold)
+    batch = control.drop(columns=TARGET) if TARGET in control else control
+    scores = predict_scores(model, batch)
+    predictions = pd.DataFrame({'ID': control.ID.to_numpy(copy=True),
+                                'probability_default': scores,
+                                'prediction': (scores >= threshold).astype('int64')})
+    return predictions, evaluate_concept(control, concept, scores, threshold)
+
+
+def evaluate_concept(control, concept, scores, threshold):
+    """Compara dois alvos no mesmo X, com um unico vetor de probabilidades.
+
+    Nao treina, prediz ou escolhe limiar. Erros por PAY_0 trazem denominadores;
+    grupos vazios/classes ausentes e ausencia de rotulos sao explicitos.
+    Resultado descritivo da intervencao, sem teste de drift real ou causalidade.
+    """
+    control, concept = _validated_pair(control, concept, threshold)
+    labeled = TARGET in control
     scores = np.asarray(scores, dtype=float)
     if (scores.shape != (len(control),) or not np.isfinite(scores).all()
             or ((scores < 0) | (scores > 1)).any()):
         raise ValueError('Probabilidades precisam ser vetor finito entre0 e1 pareado ao lote')
-    if not np.isfinite(threshold) or not 0 <= threshold <= 1:
-        raise ValueError('Limiar precisa ser finito entre0 e1')
     result = {'status': 'available' if labeled else 'unavailable_without_labels',
               'rows': len(control), 'threshold': float(threshold),
               'x_identical': True, 'shared_predictions': True,

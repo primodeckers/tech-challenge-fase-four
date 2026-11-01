@@ -5,7 +5,8 @@ import pytest
 from credit_monitor.contracts import InvalidBatch
 from credit_monitor.data import TARGET
 from credit_monitor.scenarios import build_concept_scenario
-from credit_monitor.concept import evaluate_concept
+from credit_monitor.concept import evaluate_concept, predict_concept
+from credit_monitor.baseline import predict_scores, train_models
 
 
 @pytest.fixture
@@ -144,3 +145,60 @@ def test_empty_segment_does_not_invent_metrics(production):
     result = evaluate_concept(frame, frame.copy(), np.full(16, .2), .27)
     assert result['segments']['pay_0_gt_0'] == {'status': 'empty_segment', 'rows': 0,
                                              'control': None, 'concept_drift': None, 'delta': None}
+
+
+def test_concept_predictions_use_model_once_and_keep_scaler_coefficients_and_threshold(production, monkeypatch):
+    model = train_models(production).model
+    coef = model.named_steps['classifier'].coef_.copy()
+    mean = model.named_steps['scale'].mean_.copy()
+    expected = predict_scores(model, production.drop(columns=TARGET))
+    original = model.predict_proba
+    calls = []
+
+    def predict(frame):
+        calls.append(len(frame))
+        return original(frame)
+
+    def forbidden_fit(*args, **kwargs):
+        pytest.fail('modelo congelado nao pode ser reajustado')
+
+    monkeypatch.setattr(model, 'predict_proba', predict)
+    monkeypatch.setattr(model, 'fit', forbidden_fit)
+    predictions, evaluation = predict_concept(model, .27, production, build_concept_scenario(production))
+    assert calls == [32]
+    assert predictions.columns.tolist() == ['ID', 'probability_default', 'prediction']
+    assert predictions.ID.tolist() == production.ID.tolist()
+    np.testing.assert_array_equal(predictions.probability_default, expected)
+    np.testing.assert_array_equal(predictions.prediction, (expected >= .27).astype(int))
+    assert evaluation['threshold'] == .27
+    np.testing.assert_array_equal(coef, model.named_steps['classifier'].coef_)
+    np.testing.assert_array_equal(mean, model.named_steps['scale'].mean_)
+
+
+@pytest.mark.parametrize('case', ['feature', 'mixed_labels', 'contract', 'threshold'])
+def test_invalid_concept_pair_never_reaches_model(production, case):
+    changed = build_concept_scenario(production)
+    threshold = .27
+    if case == 'feature':
+        changed.loc[0, 'AGE'] += 1
+    elif case == 'mixed_labels':
+        changed = changed.drop(columns=TARGET)
+    elif case == 'contract':
+        changed.loc[0, 'AGE'] = 18
+    else:
+        threshold = float('nan')
+
+    class ForbiddenModel:
+        def predict_proba(self, frame):
+            pytest.fail('par invalido chegou a inferencia')
+
+    with pytest.raises((ValueError, InvalidBatch)):
+        predict_concept(ForbiddenModel(), threshold, production, changed)
+
+
+def test_frozen_prediction_supports_unlabeled_pair(production):
+    model = train_models(production).model
+    frame = production.drop(columns=TARGET)
+    predictions, result = predict_concept(model, .27, frame, frame.copy())
+    assert len(predictions) == len(frame)
+    assert result['status'] == 'unavailable_without_labels'
