@@ -14,6 +14,9 @@ def _metrics(labels, scores, threshold):
     fn, tp = metrics['confusion_matrix'][1]
     metrics.update({
         'actual_positives': tp + fn, 'actual_negatives': tn + fp,
+        'precision': tp / (tp + fp) if tp + fp else None,
+        'recall': tp / (tp + fn) if tp + fn else None,
+        'f1': 2 * tp / (2 * tp + fp + fn) if 2 * tp + fp + fn else None,
         'accuracy': (tn + tp) / len(labels),
         'false_positive_rate': fp / (fp + tn) if fp + tn else None,
         'false_negative_rate': fn / (fn + tp) if fn + tp else None,

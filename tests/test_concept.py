@@ -316,3 +316,34 @@ def test_failed_concept_export_never_leaves_success_manifest(inputs, tmp_path, m
     with pytest.raises(OSError):
         run_concept(*inputs, tmp_path / 'run', trusted_model=True)
     assert not (tmp_path / 'run/manifest.json').exists()
+
+
+def test_absent_positives_propagate_unavailable_metrics_and_deltas(production):
+    result = evaluate_concept(production, build_concept_scenario(production),
+                              np.repeat([.1, .9], 16), .5)
+    low = result['segments']['pay_0_le_0']
+    for metric in ('precision', 'recall', 'f1'):
+        assert low['control'][metric] is None
+        assert low['delta'][metric] is None
+    assert low['concept_drift']['precision'] is None  # nenhum positivo predito
+    assert low['concept_drift']['recall'] == 0
+    assert low['concept_drift']['f1'] == 0  # FN>0, denominador definido
+
+
+def test_precision_unavailable_without_predictions_does_not_hide_defined_recall_or_f1(production):
+    frame = production.iloc[:16].copy()
+    frame[TARGET] = np.tile([0, 1], 8)
+    result = evaluate_concept(frame, frame.copy(), np.full(16, .1), .5)
+    assert result['control']['precision'] is None
+    assert result['control']['recall'] == result['control']['f1'] == 0
+    assert result['delta']['precision'] is None
+    assert result['delta']['recall'] == result['delta']['f1'] == 0
+
+
+def test_recall_unavailable_without_actual_positives_keeps_defined_precision_and_f1(production):
+    frame = production.iloc[:16].copy()
+    result = evaluate_concept(frame, frame.copy(), np.linspace(.1, .9, 16), .5)
+    assert result['control']['recall'] is None
+    assert result['control']['precision'] == result['control']['f1'] == 0
+    assert result['delta']['recall'] is None
+    assert result['delta']['precision'] == result['delta']['f1'] == 0
