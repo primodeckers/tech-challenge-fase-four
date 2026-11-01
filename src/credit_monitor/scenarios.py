@@ -1,4 +1,4 @@
-"""Controle e simulacoes deterministicas de Data Drift."""
+"""Controle e simulacoes reproduziveis de distribuicao e conceito."""
 
 import numpy as np
 import pandas as pd
@@ -8,6 +8,28 @@ from credit_monitor.baseline import predict_scores
 from credit_monitor.data import TARGET
 
 TRANSFORMATIONS = {"LIMIT_BAL": (3, 2), "PAY_AMT1": (1, 2)}
+
+
+def build_concept_scenario(production, *, seed=42):
+    """Troca Y entre dois grupos de PAY_0, preservando X e prevalencia.
+
+    Sorteia 1/4 do menor pool em cada direcao, sem consultar o modelo.
+    Candidatos ordenados por ID tornam a selecao independente da ordem do lote.
+    """
+    if type(seed) is not int or seed < 0:
+        raise ValueError("Seed precisa ser inteiro nao negativo")
+    control = copy_control(production)
+    if TARGET not in control:
+        raise ValueError("Geracao de Concept Drift requer rotulos")
+    up = control.loc[(control.PAY_0 <= 0) & (control[TARGET] == 0), 'ID'].sort_values().to_numpy()
+    down = control.loc[(control.PAY_0 > 0) & (control[TARGET] == 1), 'ID'].sort_values().to_numpy()
+    count = min(len(up), len(down)) // 4
+    if count == 0:
+        raise ValueError("Amostra insuficiente para intervencao efetiva nos dois grupos")
+    rng = np.random.Generator(np.random.PCG64(seed))
+    control.loc[control.ID.isin(rng.choice(up, count, replace=False)), TARGET] = 1
+    control.loc[control.ID.isin(rng.choice(down, count, replace=False)), TARGET] = 0
+    return copy_control(control)
 
 
 def predict_scenarios(model, threshold, scenarios):
