@@ -6,7 +6,7 @@
   <a href="https://www.python.org/downloads/release/python-31210/"><img src="https://img.shields.io/badge/Python-3.12.10-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white" alt="Python 3.12.10"></a>
   <a href="https://scikit-learn.org/stable/"><img src="https://img.shields.io/badge/scikit--learn-1.9.1-F7931E?style=flat-square&amp;logo=scikitlearn&amp;logoColor=white" alt="scikit-learn 1.9.1"></a>
   <a href="https://pandera.readthedocs.io/en/stable/"><img src="https://img.shields.io/badge/Pandera-0.34.1-6554C0?style=flat-square" alt="Pandera 0.34.1"></a>
-  <a href="tests/"><img src="https://img.shields.io/badge/testes-216-23856D?style=flat-square" alt="216 testes verificados"></a>
+  <a href="tests/"><img src="https://img.shields.io/badge/testes-237-23856D?style=flat-square" alt="237 testes verificados"></a>
   <a href="#andamento"><img src="https://img.shields.io/badge/status-em_desenvolvimento-ED3B7D?style=flat-square" alt="Em desenvolvimento"></a>
 </p>
 
@@ -18,6 +18,7 @@
   <a href="#cenários-de-drift">Cenários</a> ·
   <a href="#detecção-de-drift">Detecção</a> ·
   <a href="#concept-drift">Conceito</a> ·
+  <a href="#pipeline-e-telemetria">Pipeline</a> ·
   <a href="#andamento">Andamento</a>
 </p>
 
@@ -27,7 +28,7 @@ Um modelo de crédito pode continuar respondendo mesmo quando os dados deixam de
 
 Trabalho da **Fase 4 — Model monitoring and security**, do curso de Machine Learning Engineering da [FIAP](https://www.fiap.com.br/).
 
-A implementação atual cobre preparação dos dados, contratos com [Pandera](https://pandera.readthedocs.io/en/stable/), modelo com [scikit-learn](https://scikit-learn.org/stable/), cenários de Data Drift e detecção com PSI, KS e relatórios [Evidently](https://docs.evidentlyai.com/). Também inclui uma simulação separada de Concept Drift, com entradas fixas e avaliação por segmento. As próximas entregas são pipeline e rastreamento com [MLflow](https://mlflow.org/docs/latest/).
+A implementação atual cobre preparação dos dados, contratos com [Pandera](https://pandera.readthedocs.io/en/stable/), modelo com [scikit-learn](https://scikit-learn.org/stable/), Data Drift com PSI, KS e relatórios [Evidently](https://docs.evidentlyai.com/), além de Concept Drift sintético. O pipeline reúne essas etapas e registra eventos, métricas e alertas por execução. A próxima integração é o rastreamento com [MLflow](https://mlflow.org/docs/latest/).
 
 ```mermaid
 flowchart LR
@@ -154,13 +155,25 @@ artifacts/concept/
 
 Os CSVs individuais permanecem locais. O relatório registra contagens e métricas agregadas. Para repetir, use outro destino; nenhuma execução existente é sobrescrita.
 
-### 7. Rodar os testes
+### 7. Executar o pipeline
+
+Com os dados, o modelo do passo 3 e a política do passo 5 no lugar, escolha um cenário por execução.
+
+```powershell
+.venv/Scripts/python.exe -m credit_monitor.cli control --trusted-model
+.venv/Scripts/python.exe -m credit_monitor.cli data_drift --trusted-model
+.venv/Scripts/python.exe -m credit_monitor.cli concept_drift --trusted-model
+```
+
+Para usar um lote próprio, indique o CSV com `--batch`. Use `--model-dir` e `--policy-dir` se tiver escolhido outros nomes de pasta nos passos anteriores.
+
+### 8. Rodar os testes
 
 ```powershell
 .venv/Scripts/python.exe -m pytest -q
 ```
 
-**216 testes verificados.** As [fixtures são sintéticas](tests/) e os testes não precisam de rede nem da base completa. Cobrem contratos, bloqueio de lotes, partições, treino, métricas, persistência, cenários, PSI, KS, política de alerta, integração Evidently, Concept Drift e reprodução dos resultados. O badge indica a última verificação local; ainda não há execução de CI configurada. A suíte também registra avisos internos de depreciação e de correlação em colunas constantes das dependências, sem falhas nos testes.
+**237 testes verificados localmente**, com dados sintéticos. A suíte cobre preparação, contratos, modelo, cenários de drift, Evidently, telemetria, isolamento de execuções e os estados da CLI. [Ver testes](tests/)
 
 ## Dados e contratos
 
@@ -269,6 +282,23 @@ Nem toda métrica piorou em todos os grupos: a average precision no grupo `PAY_0
 
 Com X idêntico, uma comparação baseada apenas nas features não distingue os dois cenários. **Sem rótulos, a avaliação de desempenho devolve `unavailable_without_labels`**, sem inventar métricas nem concluir estabilidade. Grupos vazios e taxas sem denominador também ficam indisponíveis. O [executor S06](src/credit_monitor/concept_run.py) exige rótulos para gerar a intervenção, verifica as três partições e o modelo e salva o manifesto por último. Duas execuções produziram os seis arquivos idênticos byte a byte.
 
+## Pipeline e telemetria
+
+Cada comando gera um `run_id` novo em `artifacts/pipeline/`. A saída do terminal inclui o identificador e o estado final. O arquivo `events.jsonl` guarda uma linha por etapa ou alerta. O `result.json` confirma o estado e, em execuções completas, lista os relatórios e seus hashes.
+
+- **`0` — `succeeded`**. A execução chegou ao relatório. O JSON agregado está em `reports/report.json` e a visualização do Evidently em `reports/drift.html`. Alertas de drift podem coexistir com esse estado.
+- **`1` — `failed`**. Confira a etapa registrada. O alerta indica onde investigar ingestão, transformação, modelo, política ou relatório.
+- **`2` — `rejected`**. O contrato bloqueou o lote antes da inferência. Corrija as regras apontadas no CSV de origem e reexecute.
+- **`3` — `unavailable`**. O lote chegou à comparação, mas o tamanho ficou abaixo do mínimo ou fora do tamanho calibrado. Aguarde um lote compatível ou revise a calibração.
+
+As etapas registram tempo decorrido em segundos com relógio monotônico, segundos de CPU do processo e ocupação de CPU em relação a um núcleo. O percentual pode passar de 100% com processamento paralelo. A memória residente é amostrada ao fim de cada etapa em bytes. Medições indisponíveis aparecem como `null`.
+
+O histograma de probabilidades e a fração de predições positivas continuam disponíveis sem rótulos. A avaliação de desempenho depende dos rótulos e da validade da comparação. No cenário que altera as features, os rótulos históricos são inadequados para medir o desempenho após a intervenção.
+
+Na execução de 05/11/2026, o controle e o cenário de conceito geraram zero alertas de distribuição. O Data Drift sinalizou `LIMIT_BAL` e `PAY_AMT1`. Um lote com idade inválida foi bloqueado antes da inferência. Um lote válido de 32 linhas teve comparação indisponível pelo mínimo de 200 da política.
+
+Para investigar, localize o alerta pelo `run_id` e confira a regra, o valor e o limiar. Depois da correção, reexecute e registre o novo `run_id` junto à resolução. Os eventos guardam contagens, sinais agregados e nomes de regras.
+
 ## Organização do repositório
 
 ```text
@@ -286,7 +316,10 @@ tech-challenge-fase-four/
 │   ├── drift_report.py        Evidently e resumo HTML
 │   ├── drift_run.py           Execução da comparação de distribuições
 │   ├── concept.py             Avaliação pareada e erros por segmento
-│   └── concept_run.py         Execução do cenário de conceito
+│   ├── concept_run.py         Execução do cenário de conceito
+│   ├── telemetry.py           Eventos, métricas e alertas
+│   ├── pipeline.py            Execução integrada por cenário
+│   └── cli.py                 Comando e códigos de saída
 ├── tests/                    Testes com dados sintéticos
 ├── pyproject.toml
 └── requirements.lock.txt
@@ -302,7 +335,8 @@ tech-challenge-fase-four/
 - [x] Controle, Data Drift simulado e predições congeladas.
 - [x] PSI, KS e relatório HTML com Evidently.
 - [x] Cenário separado de Concept Drift e análise por segmento.
-- [ ] Pipeline com logs, métricas, alertas e MLflow.
+- [x] Pipeline com logs, métricas e alertas.
+- [ ] Rastreamento com MLflow.
 - [ ] Análise de vieses, governança e reprodução completa.
 - [ ] Vídeo de demonstração e revisão final da entrega.
 
