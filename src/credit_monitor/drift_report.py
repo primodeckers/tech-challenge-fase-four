@@ -27,6 +27,14 @@ def export_evidently(reference, current, policy, output_html):
     if output_html.exists():
         raise FileExistsError("Relatorio existente nao sera sobrescrito")
     comparison = compare_drift(reference, current, policy)
+    return render_evidently(reference, current, policy, comparison, output_html)
+
+
+def render_evidently(reference, current, policy, comparison, output_html):
+    """Renderiza a comparação já calculada por compare_drift para este mesmo lote."""
+    output_html = Path(output_html)
+    if output_html.exists():
+        raise FileExistsError("Relatorio existente nao sera sobrescrito")
     if comparison["status"] != "ok":
         raise ValueError("Comparacao indisponivel para emitir relatorio de sucesso")
 

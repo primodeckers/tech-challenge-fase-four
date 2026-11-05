@@ -1,4 +1,4 @@
-"""Execuções independentes dos cenários, com contrato e inferência congelada."""
+"""Execuções independentes dos cenários, do contrato ao relatório de drift."""
 
 import hashlib
 from io import BytesIO
@@ -12,6 +12,8 @@ from credit_monitor.baseline import evaluate_binary, predict_scores
 from credit_monitor.concept import predict_concept
 from credit_monitor.contracts import InvalidBatch, Violation, validate_batch
 from credit_monitor.data import TARGET
+from credit_monitor.drift import compare_drift
+from credit_monitor.drift_report import render_evidently
 from credit_monitor.model_store import load_models
 from credit_monitor.scenario_run import _verified_partition
 from credit_monitor.scenarios import build_concept_scenario, build_scenarios
@@ -23,7 +25,10 @@ FAILURE_ACTIONS = {
     'validation': 'Revisar o contrato de ingestão e a versão das dependências.',
     'transformation': 'Revisar os pré-requisitos e domínios da simulação.',
     'prediction': 'Conferir o modelo local, sua origem e a versão do ambiente.',
+    'drift': 'Conferir a política S05, o manifesto e a referência de calibração.',
+    'report': 'Conferir o espaço em disco, permissões e ambiente do Evidently.',
 }
+REPORT_FILES = ('reports/report.json', 'reports/drift.html')
 
 
 def _sha(payload):
@@ -31,19 +36,20 @@ def _sha(payload):
 
 
 def _read_batch(data_dir, batch_path, manifest):
-    if batch_path is None:
+    official = batch_path is None
+    if official:
         partition = manifest['partitions']['production']
         if partition['file'] != 'production.csv':
             raise ValueError('Nome de partição inesperado')
         batch_path = data_dir / 'production.csv'
     payload = Path(batch_path).read_bytes()
     digest = _sha(payload)
-    if batch_path == data_dir / 'production.csv' and digest != manifest['partitions']['production']['sha256']:
+    if official and digest != partition['sha256']:
         raise ValueError('SHA-256 de produção divergente')
     frame = pd.read_csv(BytesIO(payload))
     if not isinstance(frame.index, pd.RangeIndex):
         raise ValueError('CSV com campos adicionais fora do cabeçalho')
-    if batch_path == data_dir / 'production.csv' and len(frame) != manifest['partitions']['production']['rows']:
+    if official and len(frame) != partition['rows']:
         raise ValueError('Contagem de produção divergente')
     return frame, digest
 
@@ -81,6 +87,34 @@ def _write_json(path, value):
                     encoding='utf-8')
 
 
+def _read_policy(policy_dir, source):
+    manifest = json.loads((policy_dir / 'manifest.json').read_bytes())
+    if (manifest['stage'] != 'S05' or manifest['format_version'] != 1
+            or manifest['data_manifest_sha256'] != source['data_manifest_sha256']):
+        raise ValueError('Política não corresponde à origem dos dados')
+    payload = (policy_dir / 'policy.json').read_bytes()
+    digest = _sha(payload)
+    if manifest['files']['policy.json']['sha256'] != digest:
+        raise ValueError('SHA-256 da política divergente')
+    source['policy_sha256'] = digest
+    return json.loads(payload)
+
+
+def _emit_drift_alerts(log, comparison):
+    for name in comparison['alerted_features']:
+        feature = comparison['features'][name]
+        value = {'psi': feature['psi'], 'ks_d': feature['ks']['statistic'],
+                 'p_holm': feature['ks_pvalue_holm']}
+        threshold = {'psi': feature['psi_threshold'], 'ks_d': feature['ks_threshold'],
+                     'p_holm': comparison['alpha']}
+        if feature['reason'] == 'constant_support_changed':
+            value['support_changed'] = True
+            threshold = {'support_changed': False}
+        log.alert(kind='data_drift', severity='warning', rule=feature['reason'],
+                  feature=name, value=value, threshold=threshold,
+                  action='Investigar origem, distribuição e impacto antes de qualquer ajuste no modelo.')
+
+
 def _finish(log, status, rows, source, *, reason=None, files=()):
     directory = log.path.parent
     result = {'stage': 'S07', 'format_version': 1, 'status': status, 'run_id': log.run_id,
@@ -94,12 +128,12 @@ def _finish(log, status, rows, source, *, reason=None, files=()):
     return result
 
 
-def run_pipeline(*, data_dir, model_dir, runs_dir, scenario='control', batch_path=None,
+def run_pipeline(*, data_dir, model_dir, policy_dir, runs_dir, scenario='control', batch_path=None,
                  trusted_model=False):
     """Retorna estado terminal e mantém o histórico local em uma pasta nova."""
     if scenario not in SCENARIOS:
         raise ValueError('Cenário desconhecido')
-    data_dir, model_dir, runs_dir = map(Path, (data_dir, model_dir, runs_dir))
+    data_dir, model_dir, policy_dir, runs_dir = map(Path, (data_dir, model_dir, policy_dir, runs_dir))
     run_id = uuid4().hex
     directory = runs_dir / run_id
     directory.mkdir(parents=True, exist_ok=False)
@@ -141,12 +175,38 @@ def run_pipeline(*, data_dir, model_dir, runs_dir, scenario='control', batch_pat
             source['model_sha256'] = model_manifest['model_sha256']
             threshold = model_manifest['thresholds']['model']
             scores, performance = _predict(models.model, threshold, batch, current, scenario)
-            event['predictions'] = prediction_summary(scores, threshold)
+            signals = event['predictions'] = prediction_summary(scores, threshold)
             event['performance_status'] = performance['status']
+
+        with log.stage('drift', rows) as event:
+            policy = _read_policy(policy_dir, source)
+            comparison = compare_drift(reference, current, policy)
+            drift_status = comparison['status']
+            event.update(drift_status=drift_status, alerted_features=comparison['alerted_features'])
+            if drift_status != 'ok':
+                event['status'] = 'unavailable'
+        if drift_status != 'ok':
+            required = policy['min_samples'] if drift_status == 'insufficient_samples' else policy['calibration_rows']
+            log.alert(kind='drift_unavailable', severity='warning', rule=drift_status,
+                      value=rows, threshold=required, status='unavailable',
+                      action='Aguardar um lote de tamanho calibrado ou revisar a calibração.')
+            return _finish(log, 'unavailable', rows, source, reason=drift_status)
+        _emit_drift_alerts(log, comparison)
+
+        with log.stage('report', rows) as event:
+            temporary = directory / '.report-in-progress'
+            temporary.mkdir()
+            render_evidently(reference, current, policy, comparison, temporary / 'drift.html')
+            _write_json(temporary / 'report.json', {
+                'run_id': run_id, 'scenario': scenario, 'predictions': signals,
+                'performance': performance, 'drift': comparison,
+            })
+            temporary.rename(directory / 'reports')
+            event['files'] = list(REPORT_FILES)
     except Exception:
         stage = log.current_stage
         code = f'{stage}_failed'
         log.alert(kind=code, severity='error', rule=code, action=FAILURE_ACTIONS[stage])
         return _finish(log, 'failed', rows, source, reason=code)
 
-    return _finish(log, 'succeeded', rows, source)
+    return _finish(log, 'succeeded', rows, source, files=REPORT_FILES)
