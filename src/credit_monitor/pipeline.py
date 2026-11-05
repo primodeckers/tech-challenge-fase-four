@@ -20,6 +20,7 @@ from credit_monitor.scenarios import build_concept_scenario, build_scenarios
 from credit_monitor.telemetry import RunLog, prediction_summary
 
 SCENARIOS = ('control', 'data_drift', 'concept_drift')
+CONCEPT_SEED = 42
 FAILURE_ACTIONS = {
     'ingestion': 'Verificar origem, integridade e formato do CSV antes de reenviar.',
     'validation': 'Revisar o contrato de ingestão e a versão das dependências.',
@@ -65,7 +66,7 @@ def _transform(frame, scenario):
     if scenario == 'data_drift':
         return build_scenarios(frame)['data_drift']
     if scenario == 'concept_drift':
-        return build_concept_scenario(frame)
+        return build_concept_scenario(frame, seed=CONCEPT_SEED)
     return frame
 
 
@@ -98,8 +99,10 @@ def _read_policy(policy_dir, source):
     digest = _sha(payload)
     if manifest['files']['policy.json']['sha256'] != digest:
         raise ValueError('SHA-256 da política divergente')
+    policy = json.loads(payload)
     source['policy_sha256'] = digest
-    return json.loads(payload)
+    source['drift_seed'] = policy['seed']
+    return policy
 
 
 def _emit_drift_alerts(log, comparison):
@@ -168,6 +171,8 @@ def run_pipeline(*, data_dir, model_dir, policy_dir, runs_dir, scenario='control
             return _finish(log, 'rejected', rows, source, reason='contract_violation')
 
         with log.stage('transformation', rows):
+            if scenario == 'concept_drift':
+                source['concept_seed'] = CONCEPT_SEED
             current = _validate(_transform(batch, scenario))
 
         with log.stage('prediction', rows) as event:

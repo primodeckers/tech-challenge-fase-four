@@ -31,3 +31,39 @@ def test_cli_reports_storage_failure_without_paths_or_raw_errors(monkeypatch, ca
     output = capsys.readouterr()
     assert json.loads(output.out)['reason'] == 'run_storage_failed'
     assert 'SENSITIVE-PATH' not in output.out + output.err
+
+
+@pytest.mark.parametrize('pipeline_state,tracking_ok,expected', [
+    ('succeeded', True, 0), ('succeeded', False, 4), ('rejected', False, 2),
+])
+def test_requested_tracking_has_a_receipt_and_explicit_failure(tmp_path, monkeypatch, capsys,
+                                                               pipeline_state, tracking_ok, expected):
+    from credit_monitor import tracking
+
+    runs = tmp_path / 'runs'
+    run_id = 'a' * 32
+    directory = runs / run_id
+    directory.mkdir(parents=True)
+    result = {'run_id': run_id, 'scenario': 'control', 'status': pipeline_state,
+              'rows': 25, 'failed_stage': None, 'reason': None, 'alert_count': 0}
+    original = json.dumps(result)
+    (directory / 'result.json').write_text(original)
+    monkeypatch.setattr(cli, 'run_pipeline', lambda **kwargs: result)
+
+    def record(run_dir, tracking_dir):
+        assert run_dir == directory and tracking_dir == tmp_path / 'tracking'
+        if not tracking_ok:
+            raise OSError('SENSITIVE-TRACKING-DETAIL')
+        return 'mlflow-id'
+
+    monkeypatch.setattr(tracking, 'track_run', record)
+    code = cli.main(['control', '--runs-dir', str(runs), '--tracking-dir', str(tmp_path / 'tracking')])
+    raw = capsys.readouterr().out
+    output = json.loads(raw)
+    receipt = json.loads((directory / 'tracking.json').read_text())
+    assert code == expected and output['status'] == pipeline_state
+    assert output['tracking'] == receipt
+    assert receipt['status'] == ('recorded' if tracking_ok else 'failed')
+    assert receipt['mlflow_run_id'] == ('mlflow-id' if tracking_ok else None)
+    assert 'SENSITIVE-TRACKING-DETAIL' not in raw
+    assert (directory / 'result.json').read_text() == original
