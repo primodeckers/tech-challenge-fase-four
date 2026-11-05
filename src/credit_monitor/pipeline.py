@@ -43,6 +43,8 @@ def _read_batch(data_dir, batch_path, manifest):
             raise ValueError('Nome de partição inesperado')
         batch_path = data_dir / 'production.csv'
     payload = Path(batch_path).read_bytes()
+    if b'\x00' in payload:
+        raise ValueError('CSV contém byte NUL')
     digest = _sha(payload)
     if official and digest != partition['sha256']:
         raise ValueError('SHA-256 de produção divergente')

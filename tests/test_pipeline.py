@@ -1,6 +1,5 @@
 import hashlib
 import json
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -118,6 +117,21 @@ def test_ingestion_rejects_csv_with_implicit_index(inputs, tmp_path):
     result = pipeline.run_pipeline(**inputs, batch_path=path)
     assert result['status'] == 'failed' and result['failed_stage'] == 'ingestion'
     assert 'SECRET' not in json.dumps(_events(inputs, result))
+
+
+def test_ingestion_rejects_null_bytes_before_the_csv_parser_can_discard_them(inputs, tmp_path):
+    original = (inputs['data_dir'] / 'production.csv').read_bytes()
+    header, first, rest = original.split(b'\n', maxsplit=2)
+    fields = first.split(b',')
+    position = header.split(b',').index(b'AGE')
+    fields[position] += b'\x00SENSITIVE-INPUT'
+    path = tmp_path / 'corrupt.csv'
+    path.write_bytes(b'\n'.join((header, b','.join(fields), rest)))
+    result = pipeline.run_pipeline(**inputs, batch_path=path)
+    assert result['status'] == 'failed' and result['failed_stage'] == 'ingestion'
+    events = _events(inputs, result)
+    assert all(e['stage'] == 'ingestion' for e in events)
+    assert 'SENSITIVE-INPUT' not in json.dumps(events)
 
 
 def test_drift_alert_report_and_manifest_agree_on_one_comparison(inputs, monkeypatch):
