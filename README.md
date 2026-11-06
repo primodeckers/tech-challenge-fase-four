@@ -6,7 +6,7 @@
   <a href="https://www.python.org/downloads/release/python-31210/"><img src="https://img.shields.io/badge/Python-3.12.10-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white" alt="Python 3.12.10"></a>
   <a href="https://scikit-learn.org/stable/"><img src="https://img.shields.io/badge/scikit--learn-1.9.1-F7931E?style=flat-square&amp;logo=scikitlearn&amp;logoColor=white" alt="scikit-learn 1.9.1"></a>
   <a href="https://pandera.readthedocs.io/en/stable/"><img src="https://img.shields.io/badge/Pandera-0.34.1-6554C0?style=flat-square" alt="Pandera 0.34.1"></a>
-  <a href="tests/"><img src="https://img.shields.io/badge/testes-237-23856D?style=flat-square" alt="237 testes verificados"></a>
+  <a href="tests/"><img src="https://img.shields.io/badge/testes-251-23856D?style=flat-square" alt="251 testes verificados"></a>
   <a href="#andamento"><img src="https://img.shields.io/badge/status-em_desenvolvimento-ED3B7D?style=flat-square" alt="Em desenvolvimento"></a>
 </p>
 
@@ -20,6 +20,7 @@
   <a href="#concept-drift">Conceito</a> ·
   <a href="#pipeline-e-telemetria">Pipeline</a> ·
   <a href="#rastreamento-com-mlflow">MLflow</a> ·
+  <a href="#governança-e-vieses">Governança</a> ·
   <a href="#andamento">Andamento</a>
 </p>
 
@@ -174,7 +175,7 @@ Para usar um lote próprio, indique o CSV com `--batch`. Use `--model-dir` e `--
 .venv/Scripts/python.exe -m pytest -q
 ```
 
-**237 testes verificados localmente**, com dados sintéticos. A suíte cobre preparação, contratos, modelo, cenários de drift, Evidently, telemetria, isolamento de execuções e os estados da CLI. [Ver testes](tests/)
+**251 testes verificados localmente**, com dados sintéticos. A suíte cobre preparação, contratos, modelo, cenários de drift, Evidently, telemetria, tracking, estados da CLI e auditoria por grupos. [Ver testes](tests/)
 
 ## Dados e contratos
 
@@ -309,9 +310,11 @@ Acrescente `--tracking-dir` ao comando do pipeline para registrar o resultado nu
 .venv/Scripts/mlflow.exe server --backend-store-uri sqlite:///artifacts/tracking/mlflow.db --host 127.0.0.1 --port 5000 --workers 1 --no-serve-artifacts
 ```
 
-Abra `http://127.0.0.1:5000` e selecione o experimento `credit-monitor` na aba **Runs**. O `pipeline.run_id` liga a execução ao diretório do pipeline. A tag `pipeline.status` distingue `succeeded`, `rejected`, `unavailable` e `failed`. O MLflow exibe os três últimos como `FAILED` e a tag conserva a causa de cada estado.
+Abra `http://127.0.0.1:5000`, selecione **Model training** e abra o experimento `credit-monitor`. O `pipeline.run_id` liga a execução ao diretório do pipeline. A tag `pipeline.status` distingue `succeeded`, `rejected`, `unavailable` e `failed`. O MLflow exibe os três últimos como `FAILED` e a tag conserva a causa de cada estado.
 
 Em **Artifacts**, abra `events.jsonl` para consultar regra, severidade, valor, limiar e ação de cada alerta. A execução completa também tem `reports/report.json`. Em **Metrics**, procure por `execution.`, `predictions.`, `quality.`, `drift.` e `performance.`. Os parâmetros incluem os hashes das entradas verificadas, a versão do código do pipeline, a seed quando aplicável e o limiar de decisão.
+
+A coluna **Duration** da lista mede o tempo de registro no MLflow. Para a duração das etapas do pipeline, consulte `execution.<etapa>.duration_seconds`.
 
 O recibo `tracking.json` registra o ID do MLflow ou a falha de registro. Se o pipeline terminar com sucesso e o registro falhar, a CLI retorna `4`. Nos demais estados, a CLI conserva o código da execução e mostra a falha de tracking no resumo. A base SQLite e os artefatos ficam sob o diretório local de tracking. [Documentação do MLflow](https://mlflow.org/docs/latest/self-hosting/architecture/tracking-server/)
 
@@ -336,7 +339,8 @@ tech-challenge-fase-four/
 │   ├── telemetry.py           Eventos, métricas e alertas
 │   ├── pipeline.py            Execução integrada por cenário
 │   ├── tracking.py            Rastreamento em SQLite e artefatos locais
-│   └── cli.py                 Comando e códigos de saída
+│   ├── cli.py                 Comando e códigos de saída
+│   └── audit.py               Auditoria agregada por grupo
 ├── tests/                    Testes com dados sintéticos
 ├── pyproject.toml
 └── requirements.lock.txt
@@ -354,16 +358,53 @@ tech-challenge-fase-four/
 - [x] Cenário separado de Concept Drift e análise por segmento.
 - [x] Pipeline com logs, métricas e alertas.
 - [x] Rastreamento com MLflow.
-- [ ] Análise de vieses, governança e reprodução completa.
+- [x] Análise de vieses e governança.
+- [ ] Reprodução completa e testes integrados.
 - [ ] Vídeo de demonstração e revisão final da entrega.
 
 O histórico de implementação está nos [commits](https://github.com/primodeckers/tech-challenge-fase-four/commits/feat/preparacao-dados/). O desenvolvimento segue em entregas pequenas, acompanhadas de testes.
 
-## Cuidados com os dados
+## Governança e vieses
 
-O uso atual é acadêmico, sem decisões financeiras reais. Dados, predições individuais e modelos ficam locais. Diagnósticos de rejeição usam contagens e nomes de regras; relatórios destinados ao repositório precisam ser revisados antes da publicação.
+### Finalidade e acesso
 
-A exclusão de atributos cadastrais do treino não elimina possíveis vieses. A avaliação por grupos, a política de retenção, os responsáveis e a análise de governança ainda serão consolidados na etapa correspondente.
+O projeto usa dados históricos públicos da UCI para estudar validação, degradação e monitoramento de um classificador. Os experimentos são acadêmicos e as saídas são sinais para avaliação do modelo. A fonte tem identificador de registro, atributos demográficos e histórico financeiro. Esses campos permanecem em pastas locais de trabalho. [Fonte e dicionário de dados da UCI](https://archive.ics.uci.edu/dataset/350/default+of+credit+card+clients)
+
+O modelo recebe as 20 features listadas em `baseline.py`. `ID`, `SEX`, `EDUCATION` e `MARRIAGE` ficam fora da matriz de predição. `AGE` está no modelo e também na auditoria. Os eventos usam contagens, métricas e nomes de regras. Dados, predições individuais, modelos, PDFs e a base MLflow ficam em pastas locais ignoradas pelo Git. O acesso depende das permissões do sistema, e a interface MLflow é aberta em loopback pelo comando acima. As evidências públicas passam por revisão de agregação. [Features do modelo](src/credit_monitor/baseline.py)
+
+**Retenção proposta para a entrega.** A pessoa responsável pelo projeto revisa as cópias locais após a avaliação e o período de recurso. A proposta é descartar dados, caches, modelos e histórico de tracking em até 30 dias após esse encerramento, incluindo cópias de trabalho e backups sob controle da equipe. O código e agregados revisados podem ser mantidos. A execução desse descarte e a definição nominal dos responsáveis ficam a cargo da equipe. Como papéis operacionais, quem mantém os dados atende ocorrências de qualidade, quem mantém o modelo analisa drift e a pessoa responsável pela entrega revisa exposição e acesso.
+
+### LGPD no contexto
+
+A licença da base trata de reutilização. A análise de identificabilidade e de hipótese legal depende do tratamento. Para dados pessoais tratados exclusivamente para fins acadêmicos, o art. 4º, II, b remete aos arts. 7º e 11. A hipótese de estudos do art. 7º, IV depende do enquadramento como órgão de pesquisa. Em um trabalho com dados pessoais, o responsável deve registrar a hipótese aplicável à situação concreta. [Texto atualizado da LGPD](https://www2.camara.leg.br/legin/fed/lei/2018/lei-13709-14-agosto-2018-787077-normaatualizada-pl.html) · [Guia da ANPD para fins acadêmicos](https://www.gov.br/anpd/pt-br/centrais-de-conteudo/materiais-educativos-e-publicacoes/guia-orientativo-tratamento-de-dados-pessoais-para-fins-academicos-e-para-a-realizacao-de-estudos-e-pesquisas)
+
+Em uma fintech brasileira, a proteção do crédito do art. 7º, X pode ser uma hipótese a avaliar conforme finalidade, necessidade e legislação pertinente. A operação teria de definir acesso, retenção, transparência e atendimento aos direitos do titular. O art. 20 prevê pedido de revisão para decisões baseadas unicamente em tratamento automatizado de dados pessoais que afetem os interesses do titular. [LGPD, arts. 6º, 7º e 20](https://www2.camara.leg.br/legin/fed/lei/2018/lei-13709-14-agosto-2018-787077-normaatualizada-pl.html)
+
+### Erros por grupo no controle histórico
+
+A auditoria usa os 6.000 registros reservados de produção e o limiar congelado de 0,27. Os grupos de idade e de sexo são separados, com os códigos conforme a fonte. A saída suprime grupos com menos de 30 registros e deixa recall, taxa de falsos negativos ou taxa de falsos positivos indisponíveis quando o denominador correspondente tem menos de 20. [Código da auditoria](src/credit_monitor/audit.py)
+
+| Grupo | Registros | Inadimplentes | Adimplentes | Predições positivas | Recall | Falsos positivos |
+|---|---:|---:|---:|---:|---:|---:|
+| `SEX=1` | 2.372 | 572 | 1.800 | 21,42% | 48,08% | 12,94% |
+| `SEX=2` | 3.628 | 755 | 2.873 | 20,04% | 51,92% | 11,66% |
+| 19–29 anos | 1.926 | 421 | 1.505 | 21,50% | 53,92% | 12,43% |
+| 30–44 anos | 2.952 | 614 | 2.338 | 17,45% | 46,25% | 9,88% |
+| 45–59 anos | 1.040 | 271 | 769 | 26,73% | 53,14% | 17,43% |
+| 60–100 anos | 82 | 21 | 61 | 34,15% | 57,14% | 26,23% |
+
+Recall usa os inadimplentes como denominador. A taxa de falsos positivos usa os adimplentes. A maior diferença desta última taxa entre faixas etárias foi de **16,35 pontos percentuais**, entre 30–44 e 60–100 anos. O grupo mais velho tem apenas 82 registros, incluindo 61 adimplentes. A composição e a prevalência diferem entre grupos, e outras features podem carregar sinais associados aos atributos excluídos. As diferenças são descritivas. Uma próxima análise de mitigação pode comparar o modelo com e sem `AGE` em amostra independente, com limiar definido antes do teste e intervalos para as taxas.
+
+```powershell
+.venv/Scripts/python.exe -m credit_monitor.audit --model-dir artifacts/baseline --output-dir artifacts/group-audit --trusted-model
+```
+
+### Interpretar os sinais e agir
+
+- **Data Drift.** A hipótese era que aumentar `LIMIT_BAL` e reduzir `PAY_AMT1` deslocaria suas distribuições. Com o modelo congelado, o controle ficou sem alertas e a política marcou as duas features alteradas. Como a intervenção preserva os rótulos históricos, a mudança nas predições mede a resposta do modelo à entrada artificial. O responsável pelo modelo verifica origem, scores, limiares e impacto com rótulos adequados antes de propor ajuste.
+- **Concept Drift.** A hipótese era que trocar rótulos de forma condicional, com X e prevalência global fixos, reduziria a concordância com as mesmas predições. A comparação pareada confirmou queda do F1 de 0,5207 para 0,3989. Esse efeito descreve as trocas sintéticas. Numa operação real, é preciso verificar quando os rótulos ficam disponíveis e investigar diferenças de coleta e de população.
+- **Qualidade.** Quem mantém os dados usa regra e contagem do alerta para corrigir a origem e reexecutar em novo `run_id`. O registro de resolução liga a execução rejeitada à nova.
+- **Privacidade.** Em caso de exposição, a pessoa responsável pela entrega restringe o acesso, preserva evidência mínima e registra o escopo e a contenção. O art. 48 prevê comunicação à ANPD e aos titulares pelo controlador quando o incidente puder causar risco ou dano relevante. [Orientações da ANPD para incidentes](https://www.gov.br/anpd/pt-br/canais_atendimento/agente-de-tratamento/comunicado-de-incidente-de-seguranca-cis)
 
 ## Referências
 
