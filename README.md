@@ -19,6 +19,7 @@
   <a href="#detecção-de-drift">Detecção</a> ·
   <a href="#concept-drift">Conceito</a> ·
   <a href="#pipeline-e-telemetria">Pipeline</a> ·
+  <a href="#rastreamento-com-mlflow">MLflow</a> ·
   <a href="#andamento">Andamento</a>
 </p>
 
@@ -28,7 +29,7 @@ Um modelo de crédito pode continuar respondendo mesmo quando os dados deixam de
 
 Trabalho da **Fase 4 — Model monitoring and security**, do curso de Machine Learning Engineering da [FIAP](https://www.fiap.com.br/).
 
-A implementação atual cobre preparação dos dados, contratos com [Pandera](https://pandera.readthedocs.io/en/stable/), modelo com [scikit-learn](https://scikit-learn.org/stable/), Data Drift com PSI, KS e relatórios [Evidently](https://docs.evidentlyai.com/), além de Concept Drift sintético. O pipeline reúne essas etapas e registra eventos, métricas e alertas por execução. A próxima integração é o rastreamento com [MLflow](https://mlflow.org/docs/latest/).
+A implementação atual cobre preparação dos dados, contratos com [Pandera](https://pandera.readthedocs.io/en/stable/), modelo com [scikit-learn](https://scikit-learn.org/stable/), Data Drift com PSI, KS e relatórios [Evidently](https://docs.evidentlyai.com/), além de Concept Drift sintético. O pipeline reúne essas etapas e registra eventos, métricas e alertas por execução, com consulta local no MLflow.
 
 ```mermaid
 flowchart LR
@@ -299,6 +300,21 @@ Na execução de 05/11/2026, o controle e o cenário de conceito geraram zero al
 
 Para investigar, localize o alerta pelo `run_id` e confira a regra, o valor e o limiar. Depois da correção, reexecute e registre o novo `run_id` junto à resolução. Os eventos guardam contagens, sinais agregados e nomes de regras.
 
+## Rastreamento com MLflow
+
+Acrescente `--tracking-dir` ao comando do pipeline para registrar o resultado num banco SQLite local.
+
+```powershell
+.venv/Scripts/python.exe -m credit_monitor.cli data_drift --trusted-model --tracking-dir artifacts/tracking
+.venv/Scripts/mlflow.exe server --backend-store-uri sqlite:///artifacts/tracking/mlflow.db --host 127.0.0.1 --port 5000 --workers 1 --no-serve-artifacts
+```
+
+Abra `http://127.0.0.1:5000` e selecione o experimento `credit-monitor` na aba **Runs**. O `pipeline.run_id` liga a execução ao diretório do pipeline. A tag `pipeline.status` distingue `succeeded`, `rejected`, `unavailable` e `failed`. O MLflow exibe os três últimos como `FAILED` e a tag conserva a causa de cada estado.
+
+Em **Artifacts**, abra `events.jsonl` para consultar regra, severidade, valor, limiar e ação de cada alerta. A execução completa também tem `reports/report.json`. Em **Metrics**, procure por `execution.`, `predictions.`, `quality.`, `drift.` e `performance.`. Os parâmetros incluem os hashes das entradas verificadas, a versão do código do pipeline, a seed quando aplicável e o limiar de decisão.
+
+O recibo `tracking.json` registra o ID do MLflow ou a falha de registro. Se o pipeline terminar com sucesso e o registro falhar, a CLI retorna `4`. Nos demais estados, a CLI conserva o código da execução e mostra a falha de tracking no resumo. A base SQLite e os artefatos ficam sob o diretório local de tracking. [Documentação do MLflow](https://mlflow.org/docs/latest/self-hosting/architecture/tracking-server/)
+
 ## Organização do repositório
 
 ```text
@@ -319,6 +335,7 @@ tech-challenge-fase-four/
 │   ├── concept_run.py         Execução do cenário de conceito
 │   ├── telemetry.py           Eventos, métricas e alertas
 │   ├── pipeline.py            Execução integrada por cenário
+│   ├── tracking.py            Rastreamento em SQLite e artefatos locais
 │   └── cli.py                 Comando e códigos de saída
 ├── tests/                    Testes com dados sintéticos
 ├── pyproject.toml
@@ -336,7 +353,7 @@ tech-challenge-fase-four/
 - [x] PSI, KS e relatório HTML com Evidently.
 - [x] Cenário separado de Concept Drift e análise por segmento.
 - [x] Pipeline com logs, métricas e alertas.
-- [ ] Rastreamento com MLflow.
+- [x] Rastreamento com MLflow.
 - [ ] Análise de vieses, governança e reprodução completa.
 - [ ] Vídeo de demonstração e revisão final da entrega.
 
@@ -354,7 +371,7 @@ A exclusão de atributos cadastrais do treino não elimina possíveis vieses. A 
 - **Preparação e análise:** [pandas](https://pandas.pydata.org/docs/) e [NumPy](https://numpy.org/doc/stable/).
 - **Validação:** [Pandera](https://pandera.readthedocs.io/en/stable/).
 - **Modelo e avaliação:** [scikit-learn](https://scikit-learn.org/stable/), [métricas](https://scikit-learn.org/stable/modules/model_evaluation.html) e [persistência de modelos](https://scikit-learn.org/stable/model_persistence.html).
-- **Relatórios:** [Evidently](https://docs.evidentlyai.com/). Próxima integração: [MLflow](https://mlflow.org/docs/latest/).
+- **Relatórios e rastreamento** — [Evidently](https://docs.evidentlyai.com/) e [MLflow](https://mlflow.org/docs/latest/).
 - **Ambiente e testes:** [uv](https://docs.astral.sh/uv/) e [pytest](https://docs.pytest.org/en/stable/).
 
 ---
