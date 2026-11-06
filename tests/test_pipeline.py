@@ -148,6 +148,8 @@ def test_drift_alert_report_and_manifest_agree_on_one_comparison(inputs, monkeyp
     run_dir = inputs['runs_dir'] / result['run_id']
     assert result['status'] == 'succeeded' and len(comparisons) == 1
     assert result == json.loads((run_dir / 'result.json').read_text())
+    assert result['events_sha256'] == hashlib.sha256((run_dir / 'events.jsonl').read_bytes()).hexdigest()
+    assert len(result['source']['pipeline_code_sha256']) == 64
     report = json.loads((run_dir / 'reports/report.json').read_text())
     assert report['run_id'] == result['run_id'] and report['drift'] == comparisons[0]
     assert report['performance']['status'] == 'unavailable_under_feature_intervention'

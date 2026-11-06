@@ -8,6 +8,7 @@ import json
 import math
 from pathlib import Path
 import platform
+from tempfile import TemporaryDirectory
 from time import time
 
 from mlflow import MlflowClient
@@ -17,11 +18,6 @@ from mlflow.protos.databricks_pb2 import RESOURCE_ALREADY_EXISTS, ErrorCode
 
 EXPERIMENT_NAME = 'credit-monitor'
 STATES = {'succeeded', 'failed', 'rejected', 'unavailable'}
-CODE_FILES = (
-    'baseline.py', 'cli.py', 'concept.py', 'contracts.py', 'data.py', 'drift.py',
-    'drift_report.py', 'model_store.py', 'pipeline.py', 'scenario_run.py', 'scenarios.py',
-    'telemetry.py', 'tracking.py',
-)
 STAGE_METRICS = ('rows', 'duration_seconds', 'cpu_seconds', 'cpu_percent_one_core', 'rss_bytes')
 
 
@@ -33,26 +29,23 @@ def local_tracking_uri(directory):
     return f'sqlite:///{path}'
 
 
-def _code_sha256():
-    digest = hashlib.sha256()
-    for name in CODE_FILES:
-        digest.update(name.encode() + b'\0')
-        digest.update(hashlib.sha256(Path(__file__).with_name(name).read_bytes()).digest())
-    return digest.hexdigest()
-
-
 def _read_run(run_dir):
-    result = json.loads((run_dir / 'result.json').read_bytes())
+    result_bytes = (run_dir / 'result.json').read_bytes()
+    result = json.loads(result_bytes)
     if (result['stage'] != 'S07' or result['format_version'] != 1
             or result['run_id'] != run_dir.name or result['status'] not in STATES):
         raise ValueError('Resultado incompatível com a execução S07')
-    raw_events = (run_dir / 'events.jsonl').read_text(encoding='utf-8')
-    events = [json.loads(line) for line in raw_events.splitlines()]
+    event_bytes = (run_dir / 'events.jsonl').read_bytes()
+    if ('events_sha256' in result
+            and hashlib.sha256(event_bytes).hexdigest() != result['events_sha256']):
+        raise ValueError('SHA-256 dos eventos divergente')
+    events = [json.loads(line) for line in event_bytes.splitlines()]
     if not events or any((e['run_id'], e['scenario']) != (result['run_id'], result['scenario'])
                          for e in events):
         raise ValueError('Eventos não correspondem à execução')
     if sum(e['event'] == 'alert' for e in events) != result['alert_count']:
         raise ValueError('Contagem de alertas divergente')
+    artifacts = {'result.json': result_bytes, 'events.jsonl': event_bytes}
     report = {}
     if result['status'] == 'succeeded':
         payload = (run_dir / 'reports/report.json').read_bytes()
@@ -61,7 +54,12 @@ def _read_run(run_dir):
         report = json.loads(payload)
         if (report['run_id'], report['scenario']) != (result['run_id'], result['scenario']):
             raise ValueError('Relatório não corresponde à execução')
-    return result, events, report
+        predictions = [e for e in events if e['event'] == 'stage' and e['stage'] == 'prediction']
+        if (len(predictions) != 1 or predictions[0]['rows'] != result['rows']
+                or predictions[0].get('predictions') != report['predictions']):
+            raise ValueError('Predições divergentes entre eventos e relatório')
+        artifacts['reports/report.json'] = payload
+    return result, events, report, artifacts
 
 
 def _numbers(prefix, values):
@@ -108,7 +106,7 @@ def _experiment(client, artifact_root):
 def track_run(run_dir, tracking_dir):
     """Persiste o resultado e retorna o ID MLflow da execução."""
     run_dir = Path(run_dir)
-    result, events, report = _read_run(run_dir)
+    result, events, report, artifacts = _read_run(run_dir)
     tracking_dir = Path(tracking_dir).resolve()
     tracking_uri = local_tracking_uri(tracking_dir)
     tracking_dir.mkdir(parents=True, exist_ok=True)
@@ -120,12 +118,14 @@ def track_run(run_dir, tracking_dir):
     tags = {
         'pipeline.run_id': result['run_id'], 'pipeline.scenario': result['scenario'],
         'pipeline.status': result['status'], 'tracking.state': 'recording',
+        'pipeline.events_integrity': 'verified' if 'events_sha256' in result else 'legacy_unhashed',
+        'pipeline.provenance': 'recorded' if 'pipeline_code_sha256' in result['source'] else 'legacy_unknown',
     }
     for name in ('reason', 'failed_stage'):
         if result[name] is not None:
             tags[f'pipeline.{name}'] = result[name]
-    params = {**result['source'], 'code_sha256': _code_sha256(),
-              'python_version': platform.python_version(), 'mlflow_version': version('mlflow')}
+    params = {**result['source'], 'tracking_code_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+              'tracking_python_version': platform.python_version(), 'mlflow_version': version('mlflow')}
     prediction = next((e.get('predictions') for e in events if e['stage'] == 'prediction'
                        and e.get('predictions') is not None), None)
     if prediction is not None:
@@ -137,10 +137,12 @@ def track_run(run_dir, tracking_dir):
         client.log_batch(run_id, metrics=_metrics(result, events, report),
                          params=[Param(key, str(value)) for key, value in params.items()],
                          synchronous=True)
-        for name in ('result.json', 'events.jsonl'):
-            client.log_artifact(run_id, str(run_dir / name))
-        if report:
-            client.log_artifact(run_id, str(run_dir / 'reports/report.json'), artifact_path='reports')
+        with TemporaryDirectory() as temporary:
+            for name, payload in artifacts.items():
+                subdir, _, filename = name.rpartition('/')
+                copy = Path(temporary) / filename
+                copy.write_bytes(payload)
+                client.log_artifact(run_id, str(copy), artifact_path=subdir or None)
         client.set_tag(run_id, 'tracking.state', 'complete')
         client.set_terminated(run_id, status='FINISHED' if result['status'] == 'succeeded' else 'FAILED')
     except Exception:

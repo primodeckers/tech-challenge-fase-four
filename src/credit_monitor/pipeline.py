@@ -4,6 +4,7 @@ import hashlib
 from io import BytesIO
 import json
 from pathlib import Path
+import platform
 from uuid import uuid4
 
 import pandas as pd
@@ -30,10 +31,22 @@ FAILURE_ACTIONS = {
     'report': 'Conferir o espaço em disco, permissões e ambiente do Evidently.',
 }
 REPORT_FILES = ('reports/report.json', 'reports/drift.html')
+PIPELINE_FILES = (
+    'baseline.py', 'concept.py', 'contracts.py', 'data.py', 'drift.py', 'drift_report.py',
+    'model_store.py', 'pipeline.py', 'scenario_run.py', 'scenarios.py', 'telemetry.py',
+)
 
 
 def _sha(payload):
     return hashlib.sha256(payload).hexdigest()
+
+
+def _pipeline_code_sha256():
+    digest = hashlib.sha256()
+    for name in PIPELINE_FILES:
+        digest.update(name.encode() + b'\0')
+        digest.update(hashlib.sha256(Path(__file__).with_name(name).read_bytes()).digest())
+    return digest.hexdigest()
 
 
 def _read_batch(data_dir, batch_path, manifest):
@@ -126,6 +139,7 @@ def _finish(log, status, rows, source, *, reason=None, files=()):
               'scenario': log.scenario, 'rows': rows, 'source': source,
               'failed_stage': log.current_stage if status != 'succeeded' else None,
               'reason': reason, 'alert_count': log.alert_count,
+              'events_sha256': _sha(log.path.read_bytes()),
               'files': {name: {'sha256': _sha((directory / name).read_bytes())} for name in files}}
     temporary = directory / '.result.tmp'
     _write_json(temporary, result)
@@ -148,6 +162,8 @@ def run_pipeline(*, data_dir, model_dir, policy_dir, runs_dir, scenario='control
 
     try:
         with log.stage('ingestion') as event:
+            source['pipeline_code_sha256'] = _pipeline_code_sha256()
+            source['pipeline_python_version'] = platform.python_version()
             manifest_bytes = (data_dir / 'manifest.json').read_bytes()
             manifest = json.loads(manifest_bytes)
             source['data_manifest_sha256'] = _sha(manifest_bytes)
