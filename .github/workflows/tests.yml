@@ -1,0 +1,50 @@
+name: Testes
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testes-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Windows · Python 3.12.10
+    runs-on: windows-2022
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONUTF8: '1'
+      MLFLOW_DISABLE_AGENT_HINT: '1'
+    steps:
+      - name: Obter código
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Instalar Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12.10'
+          architecture: x64
+      - name: Instalar uv
+        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: '0.11.26'
+          enable-cache: false
+      - name: Criar ambiente
+        run: uv venv --python 3.12.10
+      - name: Instalar dependências verificadas
+        run: uv pip sync --python .venv/Scripts/python.exe --require-hashes requirements.lock.txt
+      - name: Instalar projeto
+        run: uv pip install --python .venv/Scripts/python.exe --no-deps -e .
+      - name: Conferir dependências
+        run: uv pip check --python .venv/Scripts/python.exe
+      - name: Testar com dados sintéticos
+        run: .venv/Scripts/python.exe -m pytest -q
