@@ -6,7 +6,7 @@
   <a href="https://www.python.org/downloads/release/python-31210/"><img src="https://img.shields.io/badge/Python-3.12.10-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white" alt="Python 3.12.10"></a>
   <a href="https://scikit-learn.org/stable/"><img src="https://img.shields.io/badge/scikit--learn-1.9.1-F7931E?style=flat-square&amp;logo=scikitlearn&amp;logoColor=white" alt="scikit-learn 1.9.1"></a>
   <a href="https://pandera.readthedocs.io/en/stable/"><img src="https://img.shields.io/badge/Pandera-0.34.1-6554C0?style=flat-square" alt="Pandera 0.34.1"></a>
-  <a href="tests/"><img src="https://img.shields.io/badge/testes-251-23856D?style=flat-square" alt="251 testes verificados"></a>
+  <a href="tests/"><img src="https://img.shields.io/badge/testes-263-23856D?style=flat-square" alt="263 testes verificados"></a>
   <a href="#andamento"><img src="https://img.shields.io/badge/status-em_desenvolvimento-ED3B7D?style=flat-square" alt="Em desenvolvimento"></a>
 </p>
 
@@ -175,7 +175,17 @@ Para usar um lote próprio, indique o CSV com `--batch`. Use `--model-dir` e `--
 .venv/Scripts/python.exe -m pytest -q
 ```
 
-**251 testes verificados localmente**, com dados sintéticos. A suíte cobre preparação, contratos, modelo, cenários de drift, Evidently, telemetria, tracking, estados da CLI e auditoria por grupos. [Ver testes](tests/)
+**263 testes verificados localmente**, com dados sintéticos. A suíte cobre preparação, contratos, modelo, cenários de drift, Evidently, telemetria, tracking, estados da CLI e auditoria por grupos. Os testes integrados executam os componentes reais e consultam o SQLite do MLflow. Também conferem lotes sem alvo, vazios, pequenos ou com colunas extras, falhas de armazenamento e preservação de execuções anteriores. A fixture da suíte bloqueia conexões de sockets Python durante os testes. [Ver testes](tests/)
+
+O [workflow de testes](.github/workflows/tests.yml) usa Windows 2022, Python 3.12.10 e uv 0.11.26. Instala as dependências com os hashes do lock, confere sua compatibilidade e executa a suíte em pushes e pull requests. A instalação acessa os serviços de pacotes; os testes usam somente fixtures sintéticas, sem baixar a base UCI ou depender de arquivos locais. As ações estão fixadas por SHA e o job tem permissão de leitura. [Documentação do GitHub Actions](https://docs.github.com/en/actions/tutorials/build-and-test-code/python) · [Execuções do projeto](https://github.com/primodeckers/tech-challenge-fase-four/actions/workflows/tests.yml)
+
+### Reprodução verificada
+
+Em **14/11/2026**, repetimos a instalação em um clone separado, com ambiente virtual novo e download da fonte oficial. Os comandos acima geraram os dados, o modelo, os cenários e os relatórios. Depois executamos cada cenário com `--tracking-dir artifacts/tracking` e a [auditoria por grupos](#erros-por-grupo-no-controle-histórico).
+
+Os 263 testes também passaram nessa instalação nova. As três partições ficaram idênticas às anteriores. Métricas do modelo, comparações de drift, relatório de conceito e resultados por grupo também se repetiram. No pipeline, cada cenário processou 6.000 registros. Controle e conceito tiveram zero alertas de distribuição; Data Drift apontou `LIMIT_BAL` e `PAY_AMT1`. Os três registros terminaram como `FINISHED` no MLflow.
+
+UUIDs, tempos, CPU e memória variam entre execuções. Os resultados determinísticos e os hashes dos artefatos foram conferidos separadamente. Para repetir, siga os passos em um clone novo ou escolha novos diretórios de saída, preservando as execuções anteriores.
 
 ## Dados e contratos
 
@@ -359,7 +369,9 @@ tech-challenge-fase-four/
 - [x] Pipeline com logs, métricas e alertas.
 - [x] Rastreamento com MLflow.
 - [x] Análise de vieses e governança.
-- [ ] Reprodução completa e testes integrados.
+- [x] Reprodução completa e testes integrados em instalação nova.
+- [x] Workflow de CI configurado e validado localmente.
+- [ ] Primeira execução do CI no GitHub, após publicação do workflow.
 - [ ] Vídeo de demonstração e revisão final da entrega.
 
 O histórico de implementação está nos [commits](https://github.com/primodeckers/tech-challenge-fase-four/commits/feat/preparacao-dados/). O desenvolvimento segue em entregas pequenas, acompanhadas de testes.
