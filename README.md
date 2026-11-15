@@ -330,6 +330,21 @@ A coluna **Duration** da lista mede o tempo de registro no MLflow. Para a duraç
 
 O recibo `tracking.json` registra o ID do MLflow ou a falha de registro. Se o pipeline terminar com sucesso e o registro falhar, a CLI retorna `4`. Nos demais estados, a CLI conserva o código da execução e mostra a falha de tracking no resumo. A base SQLite e os artefatos ficam sob o diretório local de tracking. [Documentação do MLflow](https://mlflow.org/docs/latest/self-hosting/architecture/tracking-server/)
 
+## Conferir os resultados
+
+Depois de executar os comandos de [preparação e reprodução](#executar-localmente), estes são os pontos de entrada para revisar cada parte do trabalho. Os artefatos são gerados localmente.
+
+| Parte | Onde conferir | Resultado esperado |
+|---|---|---|
+| Qualidade | [Contratos](src/credit_monitor/contracts.py) e [testes de rejeição](tests/test_integration_failures.py) | Lotes inválidos são bloqueados antes da predição, com regra e contagem nos eventos. |
+| Data Drift | `artifacts/drift/overview.html` e `comparisons.json` | Controle sem alerta; `LIMIT_BAL` e `PAY_AMT1` sinalizados no cenário alterado. |
+| Concept Drift | `artifacts/concept/report.json` | Entradas preservadas, 348 rótulos alterados e desempenho comparado com o controle. |
+| Observabilidade | [MLflow](#rastreamento-com-mlflow), `events.jsonl` e `result.json` de cada execução | Estado, alertas, volume, duração das etapas e recursos vinculados pelo `run_id`. |
+| Governança e vieses | [Análise por grupos](#erros-por-grupo-no-controle-histórico) e `artifacts/group-audit/audit.json` | Taxas com denominadores, diferenças entre grupos e limites da interpretação. |
+| Reprodução | [Testes integrados](tests/test_integration.py) e [CI aprovado](https://github.com/primodeckers/tech-challenge-fase-four/actions/runs/43663608057) | Instalação com dependências verificadas e 263 testes aprovados. |
+
+O vídeo de demonstração e seu link continuam pendentes. A entrega só estará pronta depois de conferir o arquivo final, a duração de até cinco minutos e o acesso ao vídeo.
+
 ## Organização do repositório
 
 ```text
