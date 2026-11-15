@@ -179,6 +179,8 @@ Para usar um lote próprio, indique o CSV com `--batch`. Use `--model-dir` e `--
 
 O [workflow de testes](.github/workflows/tests.yml) usa Windows 2022, Python 3.12.10 e uv 0.11.26. Instala as dependências com os hashes do lock, confere sua compatibilidade e executa a suíte em pushes e pull requests. A instalação acessa os serviços de pacotes; os testes usam somente fixtures sintéticas, sem baixar a base UCI ou depender de arquivos locais. As ações estão fixadas por SHA e o job tem permissão de leitura. [Documentação do GitHub Actions](https://docs.github.com/en/actions/tutorials/build-and-test-code/python) · [Execuções do projeto](https://github.com/primodeckers/tech-challenge-fase-four/actions/workflows/tests.yml)
 
+O primeiro CI remoto foi aprovado em **14/11/2026**, no commit `48e6dd7`: **263 testes passaram** no runner Windows. [Consultar execução e logs](https://github.com/primodeckers/tech-challenge-fase-four/actions/runs/43663608057).
+
 ### Reprodução verificada
 
 Em **14/11/2026**, repetimos a instalação em um clone separado, com ambiente virtual novo e download da fonte oficial. Os comandos acima geraram os dados, o modelo, os cenários e os relatórios. Depois executamos cada cenário com `--tracking-dir artifacts/tracking` e a [auditoria por grupos](#erros-por-grupo-no-controle-histórico).
@@ -371,7 +373,7 @@ tech-challenge-fase-four/
 - [x] Análise de vieses e governança.
 - [x] Reprodução completa e testes integrados em instalação nova.
 - [x] Workflow de CI configurado e validado localmente.
-- [ ] Primeira execução do CI no GitHub, após publicação do workflow.
+- [x] Primeira execução do CI aprovada no GitHub.
 - [ ] Vídeo de demonstração e revisão final da entrega.
 
 O histórico de implementação está nos [commits](https://github.com/primodeckers/tech-challenge-fase-four/commits/feat/preparacao-dados/). O desenvolvimento segue em entregas pequenas, acompanhadas de testes.
