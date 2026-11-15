@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from credit_monitor.audit import audit_groups
+from credit_monitor.audit import audit_groups, run_audit
 from credit_monitor.contracts import training_schema
 from credit_monitor.data import TARGET
 
@@ -57,3 +57,30 @@ def test_group_audit_marks_small_groups_and_low_denominators(production):
 def test_group_audit_rejects_invalid_or_unpaired_probabilities(production, scores):
     with pytest.raises(ValueError, match='Probabilidades'):
         audit_groups(production, scores, .27)
+
+
+def test_file_audit_preserves_model_threshold_lineage_and_previous_report(inputs, tmp_path):
+    destination = tmp_path / 'audit'
+    report = run_audit(inputs['data_dir'], inputs['model_dir'], destination, trusted_model=True)
+    serialized = (destination / 'audit.json').read_bytes()
+    assert json.loads(serialized) == report
+    assert report['rows'] == 240 and report['threshold'] == .27
+    assert report['groups']['SEX']['1']['rows'] == 120
+    assert report['groups']['SEX']['2']['rows'] == 120
+    model = json.loads((inputs['model_dir'] / 'manifest.json').read_text())
+    assert report['model_sha256'] == model['model_sha256']
+    assert report['data_manifest_sha256'] == model['metadata']['data_manifest_sha256']
+    with pytest.raises(FileExistsError):
+        run_audit(inputs['data_dir'], inputs['model_dir'], destination, trusted_model=True)
+    assert (destination / 'audit.json').read_bytes() == serialized
+
+
+@pytest.mark.parametrize('corruption', ['manifest', 'production'])
+def test_file_audit_refuses_changed_lineage_without_publishing_report(inputs, tmp_path, corruption):
+    name = 'manifest.json' if corruption == 'manifest' else 'production.csv'
+    path = inputs['data_dir'] / name
+    path.write_bytes(path.read_bytes() + b' ')
+    destination = tmp_path / 'audit'
+    with pytest.raises(ValueError, match='Origem|SHA-256'):
+        run_audit(inputs['data_dir'], inputs['model_dir'], destination, trusted_model=True)
+    assert not destination.exists()
