@@ -7,7 +7,6 @@
   <a href="https://scikit-learn.org/stable/"><img src="https://img.shields.io/badge/scikit--learn-1.9.1-F7931E?style=flat-square&amp;logo=scikitlearn&amp;logoColor=white" alt="scikit-learn 1.9.1"></a>
   <a href="https://pandera.readthedocs.io/en/stable/"><img src="https://img.shields.io/badge/Pandera-0.34.1-6554C0?style=flat-square" alt="Pandera 0.34.1"></a>
   <a href="tests/"><img src="https://img.shields.io/badge/testes-263-23856D?style=flat-square" alt="263 testes verificados"></a>
-  <a href="#andamento"><img src="https://img.shields.io/badge/status-em_desenvolvimento-ED3B7D?style=flat-square" alt="Em desenvolvimento"></a>
 </p>
 
 <p align="center">
@@ -20,17 +19,17 @@
   <a href="#concept-drift">Conceito</a> ·
   <a href="#pipeline-e-telemetria">Pipeline</a> ·
   <a href="#rastreamento-com-mlflow">MLflow</a> ·
-  <a href="#governança-e-vieses">Governança</a> ·
-  <a href="#andamento">Andamento</a>
+  <a href="#governança-e-vieses">Plano de proteção de dados</a> ·
+  <a href="evidencias/drift/">Relatório de drift</a> ·
+  <a href="https://youtu.be/8OkwMwohEFY">Vídeo (4min11s)</a>
+
 </p>
 
 ## O projeto
 
-Um modelo de crédito pode continuar respondendo mesmo quando os dados deixam de seguir o padrão do treino. Este projeto acompanha esse problema desde a entrada dos dados: valida o lote, treina um modelo de referência e compara suas predições em um controle e em dados alterados de forma conhecida.
+Um modelo de crédito pode perder precisão e continuar respondendo normalmente. Neste trabalho da Fase 4 de Machine Learning Engineering da FIAP, a pergunta é como perceber essa mudança. O experimento usa 30 mil registros históricos de crédito e acompanha o lote desde a validação até a investigação de um alerta.
 
-Trabalho da **Fase 4 — Model monitoring and security**, do curso de Machine Learning Engineering da [FIAP](https://www.fiap.com.br/).
-
-A implementação atual cobre preparação dos dados, contratos com [Pandera](https://pandera.readthedocs.io/en/stable/), modelo com [scikit-learn](https://scikit-learn.org/stable/), Data Drift com PSI, KS e relatórios [Evidently](https://docs.evidentlyai.com/), além de Concept Drift sintético. O pipeline reúne essas etapas e registra eventos, métricas e alertas por execução, com consulta local no MLflow.
+No primeiro cenário, o limite de crédito sobe e o valor do primeiro pagamento cai. O monitoramento identifica as duas mudanças. No segundo, os dados de entrada permanecem iguais, mas parte dos clientes passa a ter outro desfecho. O modelo devolve as mesmas predições e o F1 cai de 0,521 para 0,399. [Resultados de Data Drift](evidencias/drift/) · [Experimento de Concept Drift](#concept-drift)
 
 ```mermaid
 flowchart LR
@@ -51,7 +50,7 @@ flowchart LR
 
 Ambiente validado em **Windows x64, PowerShell e Python 3.12.10**. O arquivo de dependências inclui pacotes específicos de Windows; a instalação em outros sistemas ainda não foi verificada.
 
-Pré-requisitos: [Git](https://git-scm.com/downloads), [Python 3.12.10](https://www.python.org/downloads/release/python-31210/) e [uv](https://docs.astral.sh/uv/getting-started/installation/). É necessário acesso ao repositório para clonar.
+Pré-requisitos: [Git](https://git-scm.com/downloads), [Python 3.12.10](https://www.python.org/downloads/release/python-31210/) e [uv](https://docs.astral.sh/uv/getting-started/installation/).
 
 ### 1. Instalar o ambiente
 
@@ -175,15 +174,13 @@ Para usar um lote próprio, indique o CSV com `--batch`. Use `--model-dir` e `--
 .venv/Scripts/python.exe -m pytest -q
 ```
 
-**263 testes verificados localmente**, com dados sintéticos. A suíte cobre preparação, contratos, modelo, cenários de drift, Evidently, telemetria, tracking, estados da CLI e auditoria por grupos. Os testes integrados executam os componentes reais e consultam o SQLite do MLflow. Também conferem lotes sem alvo, vazios, pequenos ou com colunas extras, falhas de armazenamento e preservação de execuções anteriores. A fixture da suíte bloqueia conexões de sockets Python durante os testes. [Ver testes](tests/)
+Os 263 testes usam dados sintéticos. A suíte cobre a validação de lotes, os dois tipos de drift, a integração com MLflow e falhas como um erro de gravação no meio da execução. Os testes rodam sem acesso à rede. [Suíte de testes](tests/)
 
-O [workflow de testes](.github/workflows/tests.yml) usa Windows 2022, Python 3.12.10 e uv 0.11.26. Instala as dependências com os hashes do lock, confere sua compatibilidade e executa a suíte em pushes e pull requests. A instalação acessa os serviços de pacotes; os testes usam somente fixtures sintéticas, sem baixar a base UCI ou depender de arquivos locais. As ações estão fixadas por SHA e o job tem permissão de leitura. [Documentação do GitHub Actions](https://docs.github.com/en/actions/tutorials/build-and-test-code/python) · [Execuções do projeto](https://github.com/primodeckers/tech-challenge-fase-four/actions/workflows/tests.yml)
-
-O primeiro CI remoto foi aprovado em **14/11/2026**, no commit `48e6dd7`: **263 testes passaram** no runner Windows. [Consultar execução e logs](https://github.com/primodeckers/tech-challenge-fase-four/actions/runs/43663608057).
+A cada push ou pull request, o GitHub Actions instala as dependências com os hashes do projeto e executa a suíte no Windows com Python 3.12.10. [Configuração](.github/workflows/tests.yml) · [Histórico do CI](https://github.com/primodeckers/tech-challenge-fase-four/actions/workflows/tests.yml)
 
 ### Reprodução verificada
 
-Em **14/11/2026**, repetimos a instalação em um clone separado, com ambiente virtual novo e download da fonte oficial. Os comandos acima geraram os dados, o modelo, os cenários e os relatórios. Depois executamos cada cenário com `--tracking-dir artifacts/tracking` e a [auditoria por grupos](#erros-por-grupo-no-controle-histórico).
+Em 14/11/2026, a instalação foi repetida em um clone novo, com os dados baixados diretamente da UCI. Os comandos acima geraram os dados, o modelo, os cenários e os relatórios. Cada cenário também foi executado com `--tracking-dir artifacts/tracking`. A reprodução incluiu a [auditoria por grupos](#erros-por-grupo-no-controle-histórico).
 
 Os 263 testes também passaram nessa instalação nova. As três partições ficaram idênticas às anteriores. Métricas do modelo, comparações de drift, relatório de conceito e resultados por grupo também se repetiram. No pipeline, cada cenário processou 6.000 registros. Controle e conceito tiveram zero alertas de distribuição; Data Drift apontou `LIMIT_BAL` e `PAY_AMT1`. Os três registros terminaram como `FINISHED` no MLflow.
 
@@ -294,7 +291,7 @@ Nem toda métrica piorou em todos os grupos: a average precision no grupo `PAY_0
 
 > Esta é uma intervenção conhecida em Y com X fixo, não comprovação de Concept Drift em uma operação real. Os números são descritivos do cenário pareado; há 56 perfis de produção também presentes na referência. Não houve seleção de uma nova regra após olhar os resultados, retreino, novo limiar ou teste independente de generalização.
 
-Com X idêntico, uma comparação baseada apenas nas features não distingue os dois cenários. **Sem rótulos, a avaliação de desempenho devolve `unavailable_without_labels`**, sem inventar métricas nem concluir estabilidade. Grupos vazios e taxas sem denominador também ficam indisponíveis. O [executor S06](src/credit_monitor/concept_run.py) exige rótulos para gerar a intervenção, verifica as três partições e o modelo e salva o manifesto por último. Duas execuções produziram os seis arquivos idênticos byte a byte.
+Com X idêntico, uma comparação baseada apenas nas features não distingue os dois cenários. **Sem rótulos, a avaliação de desempenho devolve `unavailable_without_labels`**. Grupos vazios e taxas sem denominador também ficam indisponíveis. O [script do experimento](src/credit_monitor/concept_run.py) exige rótulos para gerar a intervenção, verifica as três partições e o modelo e salva o manifesto por último. Duas execuções produziram os seis arquivos idênticos byte a byte.
 
 ## Pipeline e telemetria
 
@@ -332,12 +329,12 @@ O recibo `tracking.json` registra o ID do MLflow ou a falha de registro. Se o pi
 
 ## Conferir os resultados
 
-Depois de executar os comandos de [preparação e reprodução](#executar-localmente), estes são os pontos de entrada para revisar cada parte do trabalho. Os artefatos são gerados localmente.
+O relatório de drift pode ser consultado diretamente no GitHub. Os caminhos locais abaixo são gerados pelos [comandos de reprodução](#executar-localmente).
 
 | Parte | Onde conferir | Resultado esperado |
 |---|---|---|
 | Qualidade | [Contratos](src/credit_monitor/contracts.py) e [testes de rejeição](tests/test_integration_failures.py) | Lotes inválidos são bloqueados antes da predição, com regra e contagem nos eventos. |
-| Data Drift | `artifacts/drift/overview.html` e `comparisons.json` | Controle sem alerta; `LIMIT_BAL` e `PAY_AMT1` sinalizados no cenário alterado. |
+| Data Drift | [Relatório agregado e download do HTML](evidencias/drift/) | Controle sem alerta; `LIMIT_BAL` e `PAY_AMT1` sinalizados no cenário alterado. |
 | Concept Drift | `artifacts/concept/report.json` | Entradas preservadas, 348 rótulos alterados e desempenho comparado com o controle. |
 | Observabilidade | [MLflow](#rastreamento-com-mlflow), `events.jsonl` e `result.json` de cada execução | Estado, alertas, volume, duração das etapas e recursos vinculados pelo `run_id`. |
 | Governança e vieses | [Análise por grupos](#erros-por-grupo-no-controle-histórico) e `artifacts/group-audit/audit.json` | Taxas com denominadores, diferenças entre grupos e limites da interpretação. |
@@ -350,6 +347,7 @@ Depois de executar os comandos de [preparação e reprodução](#executar-localm
 ```text
 tech-challenge-fase-four/
 ├── assets/readme/             Capa do projeto
+├── evidencias/drift/          Relatório público com resultados por variável
 ├── src/credit_monitor/
 │   ├── data.py                Aquisição, inspeção e partições
 │   ├── contracts.py           Contratos e bloqueio de lotes
@@ -375,34 +373,19 @@ tech-challenge-fase-four/
 
 `data/`, `artifacts/`, `.venv/` e `docs/` são diretórios locais, excluídos pelo [.gitignore](.gitignore). O repositório contém o código e os comandos necessários para gerar os dados e artefatos; os PDFs didáticos e o planejamento de estudo não são publicados.
 
-## Andamento
-
-- [x] Ambiente e aquisição da base oficial.
-- [x] Partições reproduzíveis e contratos de dados.
-- [x] Modelo inicial, comparação, limiar e persistência.
-- [x] Controle, Data Drift simulado e predições congeladas.
-- [x] PSI, KS e relatório HTML com Evidently.
-- [x] Cenário separado de Concept Drift e análise por segmento.
-- [x] Pipeline com logs, métricas e alertas.
-- [x] Rastreamento com MLflow.
-- [x] Análise de vieses e governança.
-- [x] Reprodução completa e testes integrados em instalação nova.
-- [x] Workflow de CI configurado e validado localmente.
-- [x] Primeira execução do CI aprovada no GitHub.
-- [x] Vídeo de demonstração publicado e acesso por link conferido sem login.
-- [ ] Revisão final da entrega.
-
-O histórico de implementação está nos [commits](https://github.com/primodeckers/tech-challenge-fase-four/commits/feat/preparacao-dados/). O desenvolvimento segue em entregas pequenas, acompanhadas de testes.
+O [histórico de commits](https://github.com/primodeckers/tech-challenge-fase-four/commits/feat/preparacao-dados/) registra a implementação por etapa.
 
 ## Governança e vieses
 
-### Finalidade e acesso
+### Plano de proteção de dados
 
 O projeto usa dados históricos públicos da UCI para estudar validação, degradação e monitoramento de um classificador. Os experimentos são acadêmicos e as saídas são sinais para avaliação do modelo. A fonte tem identificador de registro, atributos demográficos e histórico financeiro. Esses campos permanecem em pastas locais de trabalho. [Fonte e dicionário de dados da UCI](https://archive.ics.uci.edu/dataset/350/default+of+credit+card+clients)
 
 O modelo recebe as 20 features listadas em `baseline.py`. `ID`, `SEX`, `EDUCATION` e `MARRIAGE` ficam fora da matriz de predição. `AGE` está no modelo e também na auditoria. Os eventos usam contagens, métricas e nomes de regras. Dados, predições individuais, modelos, PDFs e a base MLflow ficam em pastas locais ignoradas pelo Git. O acesso depende das permissões do sistema, e a interface MLflow é aberta em loopback pelo comando acima. As evidências públicas passam por revisão de agregação. [Features do modelo](src/credit_monitor/baseline.py)
 
-**Retenção proposta para a entrega.** A pessoa responsável pelo projeto revisa as cópias locais após a avaliação e o período de recurso. A proposta é descartar dados, caches, modelos e histórico de tracking em até 30 dias após esse encerramento, incluindo cópias de trabalho e backups sob controle da equipe. O código e agregados revisados podem ser mantidos. A execução desse descarte e a definição nominal dos responsáveis ficam a cargo da equipe. Como papéis operacionais, quem mantém os dados atende ocorrências de qualidade, quem mantém o modelo analisa drift e a pessoa responsável pela entrega revisa exposição e acesso.
+**Retenção e descarte.** A proposta é manter as cópias de trabalho até o fim da avaliação e do prazo de recurso. A partir dessa data, a pessoa responsável pela entrega tem até 30 dias para conferir e excluir os dados, caches, modelos, histórico do MLflow e backups sob controle da equipe. O código e os resultados agregados revisados podem ser preservados. O descarte ainda depende da conclusão desse prazo e do registro de quem o executou.
+
+Durante o projeto, quem mantém os dados trata falhas de qualidade. Quem mantém o modelo investiga alertas de drift. A pessoa responsável pela entrega confere os arquivos antes da publicação e coordena a resposta a uma exposição.
 
 ### LGPD no contexto
 
@@ -429,7 +412,7 @@ Recall usa os inadimplentes como denominador. A taxa de falsos positivos usa os 
 .venv/Scripts/python.exe -m credit_monitor.audit --model-dir artifacts/baseline --output-dir artifacts/group-audit --trusted-model
 ```
 
-### Interpretar os sinais e agir
+### Causalidade e resposta aos alertas
 
 - **Data Drift.** A hipótese era que aumentar `LIMIT_BAL` e reduzir `PAY_AMT1` deslocaria suas distribuições. Com o modelo congelado, o controle ficou sem alertas e a política marcou as duas features alteradas. Como a intervenção preserva os rótulos históricos, a mudança nas predições mede a resposta do modelo à entrada artificial. O responsável pelo modelo verifica origem, scores, limiares e impacto com rótulos adequados antes de propor ajuste.
 - **Concept Drift.** A hipótese era que trocar rótulos de forma condicional, com X e prevalência global fixos, reduziria a concordância com as mesmas predições. A comparação pareada confirmou queda do F1 de 0,5207 para 0,3989. Esse efeito descreve as trocas sintéticas. Numa operação real, é preciso verificar quando os rótulos ficam disponíveis e investigar diferenças de coleta e de população.
