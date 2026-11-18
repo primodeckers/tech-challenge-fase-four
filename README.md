@@ -343,7 +343,7 @@ Depois de executar os comandos de [preparação e reprodução](#executar-localm
 | Governança e vieses | [Análise por grupos](#erros-por-grupo-no-controle-histórico) e `artifacts/group-audit/audit.json` | Taxas com denominadores, diferenças entre grupos e limites da interpretação. |
 | Reprodução | [Testes integrados](tests/test_integration.py) e [CI aprovado](https://github.com/primodeckers/tech-challenge-fase-four/actions/runs/43663608057) | Instalação com dependências verificadas e 263 testes aprovados. |
 
-O vídeo de demonstração e seu link continuam pendentes. A entrega só estará pronta depois de conferir o arquivo final, a duração de até cinco minutos e o acesso ao vídeo.
+**[Assistir à demonstração no YouTube (4min11s)](https://youtu.be/8OkwMwohEFY)**. Acompanhe a validação de um lote de crédito, compare os cenários de Data Drift e Concept Drift e veja como investigar um alerta no MLflow. Os capítulos na descrição permitem ir direto a cada etapa.
 
 ## Organização do repositório
 
@@ -389,7 +389,8 @@ tech-challenge-fase-four/
 - [x] Reprodução completa e testes integrados em instalação nova.
 - [x] Workflow de CI configurado e validado localmente.
 - [x] Primeira execução do CI aprovada no GitHub.
-- [ ] Vídeo de demonstração e revisão final da entrega.
+- [x] Vídeo de demonstração publicado e acesso por link conferido sem login.
+- [ ] Revisão final da entrega.
 
 O histórico de implementação está nos [commits](https://github.com/primodeckers/tech-challenge-fase-four/commits/feat/preparacao-dados/). O desenvolvimento segue em entregas pequenas, acompanhadas de testes.
 
